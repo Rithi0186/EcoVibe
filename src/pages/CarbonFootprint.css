@@ -1,0 +1,117 @@
+.footprint-container {
+    display: grid;
+    grid-template-columns: 1fr;
+    gap: var(--spacing-lg);
+}
+
+@media (min-width: 768px) {
+    .footprint-container {
+        grid-template-columns: 2fr 1fr;
+    }
+}
+
+.footprint-form-card {
+    background: white;
+    padding: var(--spacing-lg);
+    border-radius: var(--radius-lg);
+    box-shadow: var(--shadow-md);
+}
+
+.form-group {
+    margin-bottom: var(--spacing-md);
+}
+
+.form-label {
+    display: block;
+    font-weight: 500;
+    margin-bottom: 0.5rem;
+    color: var(--color-text-main);
+}
+
+.form-select,
+.form-input {
+    width: 100%;
+    padding: 0.75rem;
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-md);
+    font-size: 1rem;
+    background-color: var(--color-bg);
+    transition: border-color 0.2s;
+}
+
+.form-select:focus,
+.form-input:focus {
+    outline: none;
+    border-color: var(--color-primary);
+    box-shadow: 0 0 0 3px rgba(16, 185, 129, 0.1);
+}
+
+.limit-display {
+    background: var(--color-secondary);
+    color: white;
+    padding: var(--spacing-md);
+    border-radius: var(--radius-lg);
+    text-align: center;
+    margin-bottom: var(--spacing-md);
+    box-shadow: var(--shadow-md);
+    background: linear-gradient(135deg, var(--color-secondary), var(--color-primary-dark));
+}
+
+.co2-total {
+    font-size: 3rem;
+    font-weight: 800;
+    line-height: 1;
+    margin: var(--spacing-sm) 0;
+}
+
+.co2-unit {
+    font-size: 1rem;
+    opacity: 0.9;
+    font-weight: 400;
+}
+
+.activity-list {
+    margin-top: var(--spacing-lg);
+}
+
+.activity-item {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: var(--spacing-md);
+    background: white;
+    border-radius: var(--radius-md);
+    border: 1px solid var(--color-border);
+    margin-bottom: var(--spacing-sm);
+}
+
+.activity-icon {
+    width: 40px;
+    height: 40px;
+    border-radius: 50%;
+    background: rgba(16, 185, 129, 0.1);
+    color: var(--color-primary);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    margin-right: var(--spacing-sm);
+}
+
+.activity-details {
+    flex: 1;
+}
+
+.activity-title {
+    font-weight: 600;
+    color: var(--color-text-main);
+}
+
+.activity-meta {
+    font-size: 0.85rem;
+    color: var(--color-text-muted);
+}
+
+.activity-co2 {
+    font-weight: 700;
+    color: var(--color-secondary);
+}
