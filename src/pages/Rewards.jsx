@@ -7,9 +7,9 @@ import { QRCodeSVG } from 'qrcode.react'
 import Modal from '../components/Modal'
 import {
     Gift, Star, Coffee, Ticket, TreePine, ShoppingBag, Loader2,
-    History, CheckCircle, PenTool
+    History, CheckCircle, PenTool, QrCode, Check
 } from 'lucide-react'
-import * as LucideIcons from 'lucide-react'
+import { insforge } from '../lib/insforge'
 
 const card = {
     background: 'rgba(255,255,255,0.75)', backdropFilter: 'blur(12px)',
@@ -31,32 +31,40 @@ export default function Rewards() {
 
     async function loadData() {
         try {
+            // 1. Fetch all rewards
             const allRewards = await db.getAll('rewards')
-            const activeRewards = allRewards.filter(r => r.active)
+            const activeRewards = (allRewards || []).filter(r => r.active)
                 .sort((a, b) => (a.points_cost || 0) - (b.points_cost || 0))
             setRewards(activeRewards)
 
+            // 2. Fetch redemptions and link metadata in-memory
             const reds = await db.query('redemptions', { user_id: user.id })
-            const enriched = await Promise.all(reds
+            const enriched = (reds || [])
                 .sort((a, b) => new Date(b.created_at) - new Date(a.created_at))
-                .map(async r => ({ 
-                    ...r, 
-                    rewards: await db.getById('rewards', r.reward_id) 
-                }))
-            )
+                .map(r => {
+                    const rData = (allRewards || []).find(rew => rew.id === r.reward_id)
+                    return { ...r, rewards: rData }
+                })
+            
             setRedemptions(enriched)
-        } catch (err) { console.error(err) }
+        } catch (err) { console.error('Rewards load error:', err) }
         finally { setLoading(false) }
     }
 
     async function redeemReward(reward) {
         if ((profile?.eco_points || 0) < reward.points_cost) {
-            toast.warning(`Not enough points! Need ${reward.points_cost - (profile?.eco_points || 0)} more.`)
+            toast.warning(`Insufficient EcoPoints! You need ${reward.points_cost - (profile?.eco_points || 0)} more.`)
             return
         }
+        
+        const confirmRedeem = window.confirm(`Spend ${reward.points_cost} points on ${reward.title}?`)
+        if (!confirmRedeem) return
+
         setRedeeming(reward.id)
         try {
             const code = `EV-${Date.now().toString(36).toUpperCase()}-${Math.random().toString(36).slice(2, 6).toUpperCase()}`
+            
+            // 1. Log the redemption
             await db.insert('redemptions', {
                 reward_id: reward.id, 
                 user_id: user.id, 
@@ -64,17 +72,38 @@ export default function Rewards() {
                 code, 
                 status: 'active',
             })
-            await updateProfile({ eco_points: (profile?.eco_points || 0) - reward.points_cost })
+            
+            // 2. Subtract points from profile
+            const currentPoints = profile?.eco_points || 0
+            await updateProfile({ eco_points: currentPoints - reward.points_cost })
+            
+            // 3. Show the QR Code immediately
             setShowCode({ reward, code })
-            toast.success('Reward redeemed! 🎉')
+            toast.success(`Enjoy your "${reward.title}"!`)
+            
+            // 4. Refresh data
             await loadData()
-        } catch (err) { toast.error(err.message || 'Failed to redeem') }
+        } catch (err) { 
+            console.error('Redeem error:', err)
+            toast.error(err.message || 'Failed to process redemption') 
+        }
         finally { setRedeeming(null) }
     }
 
     function getIcon(iconName) {
-        const name = iconName?.split('-').map(w => w.charAt(0).toUpperCase() + w.slice(1)).join('')
-        return LucideIcons[name] || Gift
+        if (!iconName) return Gift
+        // Map common reward icon names to components
+        const iconMap = {
+            'coffee': Coffee,
+            'gift': Gift,
+            'shopping-bag': ShoppingBag,
+            'ticket': Ticket,
+            'tree': TreePine,
+            'star': Star,
+            'activity': Gift,
+            'pen-tool': PenTool
+        }
+        return iconMap[iconName] || Gift
     }
 
     if (loading) {
@@ -87,30 +116,40 @@ export default function Rewards() {
 
     return (
         <div style={{ display: 'flex', flexDirection: 'column', gap: '24px' }}>
-            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: '12px' }}>
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: '16px' }}>
                 <div>
-                    <h1 style={{ fontSize: '28px', fontWeight: 700, fontFamily: 'Poppins, sans-serif' }}>Rewards</h1>
-                    <p style={{ color: '#9ca3af', marginTop: '4px' }}>Redeem your EcoPoints for real rewards</p>
+                    <h1 style={{ fontSize: '28px', fontWeight: 700, fontFamily: 'Poppins, sans-serif' }}>My Rewards Hub</h1>
+                    <p style={{ color: '#9ca3af', marginTop: '4px' }}>Redeem your hard-earned EcoPoints for campus perks</p>
                 </div>
-                <div style={{ ...card, padding: '12px 20px', display: 'flex', alignItems: 'center', gap: '8px' }}>
-                    <Star size={18} color="#f59e0b" />
-                    <span style={{ fontWeight: 700, fontSize: '18px', color: '#1f2937' }}>{profile?.eco_points || 0}</span>
-                    <span style={{ fontSize: '14px', color: '#9ca3af' }}>EcoPoints</span>
+                <div style={{ ...card, padding: '16px 24px', display: 'flex', alignItems: 'center', gap: '12px', border: '1px solid #fcd34d', background: '#fffbeb' }}>
+                    <Star size={24} color="#f59e0b" fill="#f59e0b" />
+                    <div>
+                        <p style={{ fontSize: '11px', color: '#92400e', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.5px' }}>Balance</p>
+                        <p style={{ fontWeight: 800, fontSize: '24px', color: '#1f2937', lineHeight: 1 }}>{profile?.eco_points || 0}</p>
+                    </div>
                 </div>
             </div>
 
             {/* Tabs */}
-            <div style={{ display: 'flex', gap: '8px' }}>
-                {['rewards', 'history'].map(tab => (
-                    <button key={tab} onClick={() => setActiveTab(tab)} style={{
-                        display: 'flex', alignItems: 'center', gap: '8px',
-                        padding: '10px 20px', borderRadius: '12px', fontSize: '14px', fontWeight: 500,
-                        border: 'none', cursor: 'pointer',
-                        background: activeTab === tab ? '#4caf50' : 'white',
-                        color: activeTab === tab ? 'white' : '#6b7280',
-                        boxShadow: activeTab === tab ? '0 4px 12px rgba(76,175,80,0.3)' : 'none'
-                    }}>
-                        {tab === 'rewards' ? <><Gift size={16} /> Available Rewards</> : <><History size={16} /> Redemption History</>}
+            <div style={{ display: 'flex', background: 'rgba(0,0,0,0.04)', padding: '6px', borderRadius: '14px', width: 'fit-content' }}>
+                {[
+                    { id: 'rewards', label: 'Store', icon: ShoppingBag },
+                    { id: 'history', label: 'My Coupons', icon: History }
+                ].map(tab => (
+                    <button 
+                        key={tab.id} 
+                        onClick={() => setActiveTab(tab.id)} 
+                        style={{
+                            display: 'flex', alignItems: 'center', gap: '8px',
+                            padding: '8px 20px', borderRadius: '10px', fontSize: '14px', fontWeight: 600,
+                            border: 'none', cursor: 'pointer',
+                            transition: 'all 0.2s',
+                            background: activeTab === tab.id ? 'white' : 'transparent',
+                            color: activeTab === tab.id ? '#4caf50' : '#9ca3af',
+                            boxShadow: activeTab === tab.id ? '0 2px 8px rgba(0,0,0,0.06)' : 'none'
+                        }}
+                    >
+                        <tab.icon size={16} /> {tab.label}
                     </button>
                 ))}
             </div>
@@ -121,34 +160,39 @@ export default function Rewards() {
                         const Icon = getIcon(reward.icon)
                         const canAfford = (profile?.eco_points || 0) >= reward.points_cost
                         return (
-                            <div key={reward.id} style={{ ...card, padding: '20px', opacity: canAfford ? 1 : 0.6 }}>
-                                <div style={{ display: 'flex', alignItems: 'flex-start', gap: '12px', marginBottom: '12px' }}>
+                            <div key={reward.id} style={{ ...card, padding: '24px', display: 'flex', flexDirection: 'column', transition: 'all 0.3s' }}>
+                                <div style={{ display: 'flex', alignItems: 'flex-start', gap: '16px', marginBottom: '16px' }}>
                                     <div style={{
-                                        width: '48px', height: '48px', minWidth: '48px', borderRadius: '16px',
-                                        background: 'linear-gradient(135deg, #fbbf24, #d97706)',
+                                        width: '56px', height: '56px', minWidth: '56px', borderRadius: '18px',
+                                        background: 'linear-gradient(135deg, #fcd34d, #f59e0b)',
                                         display: 'flex', alignItems: 'center', justifyContent: 'center',
-                                        boxShadow: '0 4px 12px rgba(251,191,36,0.3)'
+                                        boxShadow: '0 8px 20px rgba(245,158,11,0.2)'
                                     }}>
-                                        <Icon size={22} color="white" />
+                                        <Icon size={28} color="white" />
                                     </div>
-                                    <div style={{ flex: 1 }}>
-                                        <h3 style={{ fontWeight: 700, color: '#1f2937' }}>{reward.title}</h3>
-                                        <p style={{ fontSize: '12px', color: '#9ca3af' }}>{reward.vendor}</p>
+                                    <div>
+                                        <h3 style={{ fontWeight: 800, color: '#1f2937', fontSize: '16px' }}>{reward.title}</h3>
+                                        <span style={{ fontSize: '12px', color: '#43a047', fontWeight: 600 }}>{reward.vendor}</span>
                                     </div>
                                 </div>
-                                <p style={{ fontSize: '14px', color: '#6b7280', marginBottom: '16px' }}>{reward.description}</p>
-                                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-                                    <span style={{ fontSize: '14px', fontWeight: 700, color: '#d97706', display: 'flex', alignItems: 'center', gap: '4px' }}>
-                                        <Star size={14} /> {reward.points_cost} pts
-                                    </span>
-                                    <button onClick={() => redeemReward(reward)} disabled={!canAfford || redeeming === reward.id} style={{
-                                        padding: '8px 16px', borderRadius: '12px', fontSize: '14px', fontWeight: 500,
-                                        border: 'none', cursor: canAfford ? 'pointer' : 'not-allowed',
-                                        background: canAfford ? '#4caf50' : '#f3f4f6',
-                                        color: canAfford ? 'white' : '#9ca3af',
-                                        boxShadow: canAfford ? '0 4px 12px rgba(76,175,80,0.3)' : 'none'
-                                    }}>
-                                        {redeeming === reward.id ? <Loader2 size={14} style={{ animation: 'spin 1s linear infinite' }} /> : 'Redeem'}
+                                <p style={{ fontSize: '14px', color: '#6b7280', lineHeight: 1.6, marginBottom: '24px', flex: 1 }}>{reward.description}</p>
+                                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', paddingTop: '16px', borderTop: '1px solid #f3f4f6' }}>
+                                    <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                                        <Star size={16} color="#f59e0b" fill="#f59e0b" />
+                                        <span style={{ fontWeight: 800, fontSize: '18px', color: '#1f2937' }}>{reward.points_cost}</span>
+                                    </div>
+                                    <button 
+                                        onClick={() => redeemReward(reward)} 
+                                        disabled={!canAfford || redeeming === reward.id} 
+                                        className="eco-btn" 
+                                        style={{
+                                            padding: '8px 24px', borderRadius: '12px', fontSize: '14px',
+                                            opacity: canAfford ? 1 : 0.5,
+                                            cursor: canAfford ? 'pointer' : 'not-allowed',
+                                            display: 'flex', alignItems: 'center', gap: '8px'
+                                        }}
+                                    >
+                                        {redeeming === reward.id ? <Loader2 size={16} style={{ animation: 'spin 1s linear infinite' }} /> : 'Redeem Now'}
                                     </button>
                                 </div>
                             </div>
@@ -159,53 +203,85 @@ export default function Rewards() {
                 <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
                     {redemptions.length > 0 ? (
                         redemptions.map(r => (
-                            <div key={r.id} style={{ ...card, padding: '16px', display: 'flex', alignItems: 'center', gap: '16px' }}>
+                            <div key={r.id} style={{ ...card, padding: '20px', display: 'flex', alignItems: 'center', gap: '16px' }}>
                                 <div style={{
-                                    width: '40px', height: '40px', background: '#c8e6c9', borderRadius: '12px',
+                                    width: '48px', height: '48px', background: '#f0fdf4', borderRadius: '14px',
                                     display: 'flex', alignItems: 'center', justifyContent: 'center'
                                 }}>
-                                    <Gift size={18} color="#43a047" />
+                                    <Ticket size={24} color="#10b981" />
                                 </div>
                                 <div style={{ flex: 1, minWidth: 0 }}>
-                                    <p style={{ fontWeight: 500, fontSize: '14px' }}>{r.rewards?.title}</p>
-                                    <p style={{ fontSize: '12px', color: '#9ca3af' }}>
-                                        {new Date(r.created_at).toLocaleDateString()} · {r.rewards?.vendor}
+                                    <p style={{ fontWeight: 700, fontSize: '16px', color: '#1f2937' }}>{r.rewards?.title || 'Coupon'}</p>
+                                    <p style={{ fontSize: '12px', color: '#9ca3af', marginTop: '2px' }}>
+                                        Redeemed {new Date(r.created_at).toLocaleDateString()}
                                     </p>
                                 </div>
-                                <div style={{ textAlign: 'right' }}>
-                                    <p style={{ fontSize: '14px', fontWeight: 600, color: '#d97706' }}>-{r.points_spent} pts</p>
-                                    <button onClick={() => setShowCode({ reward: r.rewards, code: r.code })} style={{
-                                        fontSize: '12px', color: '#43a047', fontWeight: 500,
-                                        background: 'none', border: 'none', cursor: 'pointer', textDecoration: 'underline'
-                                    }}>View Code</button>
-                                </div>
+                                <button 
+                                    onClick={() => setShowCode({ reward: r.rewards, code: r.code })}
+                                    style={{
+                                        display: 'flex', alignItems: 'center', gap: '8px',
+                                        padding: '10px 18px', borderRadius: '10px', fontSize: '13px', fontWeight: 700,
+                                        border: '1px solid #10b981', background: 'white', color: '#10b981',
+                                        cursor: 'pointer'
+                                    }}
+                                >
+                                    <QrCode size={16} /> QR Code
+                                </button>
                             </div>
                         ))
                     ) : (
                         <div style={{ textAlign: 'center', padding: '64px 0', color: '#9ca3af' }}>
-                            <Gift size={40} style={{ margin: '0 auto 12px', opacity: 0.5 }} />
-                            <p>No redemptions yet. Start redeeming rewards!</p>
+                            <History size={48} style={{ margin: '0 auto 16px', opacity: 0.3 }} />
+                            <p style={{ fontWeight: 500 }}>No redemptions found.</p>
+                            <p style={{ fontSize: '13px', marginTop: '4px' }}>Visit the store to spend your EcoPoints.</p>
                         </div>
                     )}
                 </div>
             )}
 
-            <Modal isOpen={!!showCode} onClose={() => setShowCode(null)} title="Redemption Code" size="sm">
+            <Modal isOpen={!!showCode} onClose={() => setShowCode(null)} title="Redeem My Reward" size="sm">
                 {showCode && (
-                    <div style={{ textAlign: 'center', display: 'flex', flexDirection: 'column', gap: '16px' }}>
-                        <div style={{ display: 'inline-flex', padding: '16px', background: 'white', borderRadius: '16px', border: '2px solid #a5d6a7', margin: '0 auto' }}>
-                            <QRCodeSVG value={showCode.code} size={180} />
+                    <div style={{ textAlign: 'center', padding: '10px 0' }}>
+                        <div style={{ 
+                            background: '#fffbeb', border: '1px solid #fcd34d', 
+                            padding: '16px', borderRadius: '16px', marginBottom: '24px' 
+                        }}>
+                             <h4 style={{ fontWeight: 800, color: '#92400e', marginBottom: '4px' }}>{showCode.reward?.title}</h4>
+                             <p style={{ fontSize: '13px', color: '#b45309' }}>Authorized Vendor: <strong>{showCode.reward?.vendor}</strong></p>
                         </div>
-                        <div>
-                            <p style={{ fontSize: '14px', color: '#6b7280', marginBottom: '4px' }}>Redemption Code</p>
-                            <p style={{ fontSize: '18px', fontFamily: 'monospace', fontWeight: 700, color: '#1f2937', background: '#f9fafb', borderRadius: '12px', padding: '8px 16px' }}>
-                                {showCode.code}
-                            </p>
+
+                        <div style={{ 
+                            padding: '20px', background: 'white', borderRadius: '24px', 
+                            boxShadow: '0 10px 40px rgba(0,0,0,0.1)', border: '1px solid #e5e7eb',
+                            display: 'inline-block', marginBottom: '24px'
+                        }}>
+                            <QRCodeSVG value={showCode.code} size={200} level="H" />
+                            <div style={{ marginTop: '16px', paddingTop: '16px', borderTop: '1px dashed #e5e7eb' }}>
+                                <p style={{ fontSize: '10px', color: '#9ca3af', textTransform: 'uppercase', marginBottom: '4px', letterSpacing: '1px' }}>Validation Code</p>
+                                <p style={{ fontSize: '18px', fontFamily: 'monospace', fontWeight: 700, color: '#1f2937' }}>{showCode.code}</p>
+                            </div>
                         </div>
-                        <div style={{ padding: '12px', background: '#e8f5e9', borderRadius: '12px', fontSize: '14px', color: '#2e7d32' }}>
-                            <p style={{ fontWeight: 500 }}>🎉 {showCode.reward?.title}</p>
-                            <p style={{ fontSize: '12px', color: '#43a047', marginTop: '4px' }}>Show this code to the vendor to claim your reward</p>
+
+                        <div style={{ 
+                            padding: '16px', background: '#f0fdf4', borderRadius: '16px', 
+                            fontSize: '13px', color: '#166534', textAlign: 'left',
+                            display: 'flex', gap: '12px'
+                        }}>
+                            <div style={{ width: '24px', height: '24px', background: '#10b981', minWidth: '24px', borderRadius: '50%', display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'white' }}>
+                                <Check size={14} />
+                            </div>
+                            <p><strong>Instructions:</strong> Show this QR code to the vendor staff. They will scan it to verify and provide your reward.</p>
                         </div>
+                        
+                        <button 
+                            onClick={() => setShowCode(null)}
+                            style={{ 
+                                marginTop: '24px', width: '100%', padding: '14px', borderRadius: '12px',
+                                background: '#f3f4f6', border: 'none', color: '#4b5563', fontWeight: 700, cursor: 'pointer'
+                            }}
+                        >
+                            Done
+                        </button>
                     </div>
                 )}
             </Modal>
@@ -214,3 +290,4 @@ export default function Rewards() {
         </div>
     )
 }
+

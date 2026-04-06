@@ -121,7 +121,7 @@ export default function Dashboard() {
             {/* Header */}
             <div>
                 <h1 style={{ fontSize: '28px', fontWeight: 700, fontFamily: 'Poppins, sans-serif' }}>
-                    Welcome back, <span style={{ color: '#43a047' }}>{profile?.name?.split(' ')[0]}</span> 👋
+                    Welcome back, <span style={{ color: '#43a047' }}>{profile?.name}</span> 👋
                 </h1>
                 <p style={{ color: '#9ca3af', marginTop: '4px' }}>Here's your sustainability snapshot</p>
             </div>

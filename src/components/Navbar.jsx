@@ -63,7 +63,7 @@ export default function Navbar() {
                                 {profile.name?.charAt(0)?.toUpperCase()}
                             </div>
                             <span style={{ fontSize: '14px', fontWeight: 600, color: '#374151' }}>
-                                {profile.name?.split(' ')[0]}
+                                {profile.name}
                             </span>
                         </div>
                         <button onClick={handleSignOut} style={{

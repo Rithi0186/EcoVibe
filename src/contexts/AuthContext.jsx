@@ -29,11 +29,15 @@ export function AuthProvider({ children }) {
                     
                     if (!profData) {
                         // Self-healing: Create missing profile
+                        // Extract name from email if auth user name is missing
+                        const fallbackName = data.user.email?.split('@')[0] || 'EcoViber'
+                        const displayName = data.user.name || fallbackName
+                        
                         const { data: newProf, error: insErr } = await insforge.database
                             .from('profiles')
                             .insert({
                                 id: data.user.id,
-                                name: data.user.name || 'New User',
+                                name: displayName,
                                 contact_email: data.user.email,
                                 eco_points: 10,
                                 role: 'student'
@@ -43,7 +47,7 @@ export function AuthProvider({ children }) {
                         if (!insErr) profData = newProf
                     }
                     
-                    setProfile(profData || { id: data.user.id, name: data.user.name || 'User' })
+                    setProfile(profData || { id: data.user.id, name: data.user.email?.split('@')[0] || 'User' })
                 }
             } catch (err) {
                 console.error('Session check failed:', err)

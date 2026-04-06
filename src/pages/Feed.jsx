@@ -8,6 +8,8 @@ import {
     MessageCircle, Tag, Clock
 } from 'lucide-react'
 
+import { insforge } from '../lib/insforge'
+
 const TAGS = ['🌱 Tree Planting', '♻️ Recycling', '🚲 Cycling', '🥗 Veg Diet', '⚡ Energy Saving', '📦 Reuse', '🌍 Climate Action']
 
 const card = {
@@ -38,25 +40,58 @@ export default function Feed() {
 
     async function loadPosts() {
         try {
+            // 1. Fetch posts and limit to recent 30
             const allPosts = await db.getAll('posts')
             const sorted = allPosts
                 .sort((a, b) => new Date(b.created_at) - new Date(a.created_at))
                 .slice(0, 30)
             
-            // Enrich posts with profile, likes, comments
-            const enriched = await Promise.all(sorted.map(async post => {
-                const userProfile = await db.getById('profiles', post.user_id)
-                const likes = await db.query('post_likes', { post_id: post.id })
-                const rawComments = await db.query('post_comments', { post_id: post.id })
-                const enrichedComments = await Promise.all(rawComments.map(async c => ({
-                    ...c, 
-                    profiles: await db.getById('profiles', c.user_id)
-                })))
-                return { ...post, profiles: userProfile, post_likes: likes, post_comments: enrichedComments }
+            if (sorted.length === 0) { 
+                setPosts([]); 
+                setLoading(false); 
+                return 
+            }
+
+            const postIds = sorted.map(p => p.id)
+
+            // 2. Batch fetch ALL related metadata in parallel (Likes, Comments)
+            const [likesRes, commentsRes] = await Promise.all([
+                insforge.database.from('post_likes').select('*').in('post_id', postIds),
+                insforge.database.from('post_comments').select('*').in('post_id', postIds)
+            ])
+
+            const allLikes = likesRes.data || []
+            const allComments = commentsRes.data || []
+
+            // 3. Batch fetch ALL profiles for both post authors and comment authors
+            const userIds = new Set([
+                ...sorted.map(p => p.user_id),
+                ...allComments.map(c => c.user_id)
+            ])
+
+            const { data: profiles } = await insforge.database
+                .from('profiles')
+                .select('*')
+                .in('id', Array.from(userIds))
+            
+            const profileMap = (profiles || []).reduce((acc, p) => ({ ...acc, [p.id]: p }), {})
+
+            // 4. Map everything together in-memory (No more N+1 requests!)
+            const enriched = sorted.map(post => ({
+                ...post,
+                profiles: profileMap[post.user_id],
+                post_likes: allLikes.filter(l => l.post_id === post.id),
+                post_comments: allComments
+                    .filter(c => c.post_id === post.id)
+                    .map(c => ({ ...c, profiles: profileMap[c.user_id] }))
             }))
+
             setPosts(enriched)
-        } catch (err) { console.error(err) }
-        finally { setLoading(false) }
+        } catch (err) { 
+            console.error('Feed load error:', err)
+        } finally { 
+            setLoading(false) 
+        }
     }
 
     async function handlePost(e) {
