@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react'
 import { useAuth } from '../contexts/AuthContext'
 import { useToast } from '../components/Toast'
-import { localDb } from '../lib/localDb'
+import { db } from '../lib/db'
 import Modal from '../components/Modal'
 import { ListSkeleton } from '../components/LoadingSkeleton'
 import {
@@ -68,65 +68,59 @@ export default function GreenSwap() {
 
     useEffect(() => { loadListings() }, [tab, catFilter, sortBy])
 
-    function loadListings() {
+    async function loadListings() {
         setLoading(true)
         try {
-            let data = localDb.query('marketplace_listings', l => l.type === tab && l.status === 'active')
+            const dataRaw = await db.query('marketplace_listings', { type: tab, status: 'active' })
+            let data = dataRaw
             if (catFilter) data = data.filter(l => l.category === catFilter)
             if (sortBy === 'newest') data.sort((a, b) => new Date(b.created_at) - new Date(a.created_at))
             else if (sortBy === 'price_low') data.sort((a, b) => (a.price_amount || 0) - (b.price_amount || 0))
             else if (sortBy === 'price_high') data.sort((a, b) => (b.price_amount || 0) - (a.price_amount || 0))
-            // Enrich with profiles
-            data = data.map(l => ({ ...l, profiles: localDb.getById('profiles', l.user_id) }))
+            
+            // Enrich with profiles (could be optimized with a join if SDK supports it)
+            const profiles = await db.getAll('profiles')
+            data = data.map(l => ({ ...l, profiles: profiles.find(p => p.id === l.user_id) }))
             setListings(data)
 
-            const reqs = localDb.query('swap_requests', r => r.buyer_id === user.id || r.seller_id === user.id)
-            setMyRequests(reqs)
+            const reqs = await db.query('swap_requests', {})
+            const userReqs = reqs.filter(r => r.buyer_id === user.id || r.seller_id === user.id)
+            setMyRequests(userReqs)
 
-            const allReqs = localDb.query('swap_requests', r => r.status === 'pending' || r.status === 'accepted')
-            setAllRequests(allReqs)
+            const activeReqs = reqs.filter(r => r.status === 'pending' || r.status === 'accepted')
+            setAllRequests(activeReqs)
         } catch (err) { console.error(err) }
         finally { setLoading(false) }
     }
 
-    function handleCreate(e) {
+    async function handleCreate(e) {
         e.preventDefault()
         if (!form.title.trim() || !form.category) { toast.warning('Please fill in title and category'); return }
         setCreating(true)
         try {
-            // Convert images to base64
-            const processImages = async () => {
-                const imageUrls = []
-                for (const file of imageFiles) {
-                    const dataUrl = await new Promise((resolve) => {
-                        const reader = new FileReader()
-                        reader.onload = (ev) => resolve(ev.target.result)
-                        reader.readAsDataURL(file)
-                    })
-                    imageUrls.push(dataUrl)
-                }
-                return imageUrls
+            const imageUrls = []
+            for (const file of imageFiles) {
+                const path = `${user.id}/${Date.now()}-${file.name}`
+                const data = await db.upload('marketplace_images', path, file)
+                imageUrls.push(data.url)
             }
-            processImages().then(imageUrls => {
-                localDb.insert('marketplace_listings', {
-                    user_id: user.id, student_id: profile.student_id, type: tab,
-                    title: form.title.trim(), description: form.description.trim(),
-                    category: form.category, subcategory: form.subcategory,
-                    condition: form.condition, price_type: form.priceType,
-                    price_amount: parseFloat(form.priceAmount) || 0,
-                    pickup_point_id: form.pickupPoint || null,
-                    seller_roll_no: form.sellerRollNo.trim(), seller_phone: form.sellerPhone.trim(),
-                    images: imageUrls,
-                    status: 'active',
-                })
-                toast.success('Listing created! 🎉')
-                setShowCreate(false)
-                setForm({ title: '', description: '', category: '', subcategory: '', condition: 'Good', priceType: 'free', priceAmount: '', pickupPoint: '', sellerRollNo: profile?.student_id || '', sellerPhone: '', images: [] })
-                setImageFiles([])
-                loadListings()
-                setCreating(false)
+
+            await db.insert('marketplace_listings', {
+                user_id: user.id, type: tab,
+                title: form.title.trim(), description: form.description.trim(),
+                category: form.category, condition: form.condition, price_type: form.priceType,
+                price_amount: parseFloat(form.priceAmount) || 0,
+                seller_roll_no: form.sellerRollNo.trim(),
+                images: imageUrls,
+                status: 'active',
             })
-        } catch (err) { toast.error(err.message || 'Failed to create listing'); setCreating(false) }
+            toast.success('Listing created! 🎉')
+            setShowCreate(false)
+            setForm({ title: '', description: '', category: '', subcategory: '', condition: 'Good', priceType: 'free', priceAmount: '', pickupPoint: '', sellerRollNo: profile?.student_id || '', sellerPhone: '', images: [] })
+            setImageFiles([])
+            await loadListings()
+        } catch (err) { toast.error(err.message || 'Failed to create listing') }
+        finally { setCreating(false) }
     }
 
     function openRequestModal(listing) {
@@ -134,7 +128,7 @@ export default function GreenSwap() {
         setRequestModal(listing)
     }
 
-    function handleRequest(e) {
+    async function handleRequest(e) {
         e.preventDefault()
         if (!buyerForm.rollNo.trim() || !buyerForm.name.trim() || !buyerForm.pickupPoint) {
             toast.warning('Please fill in all fields'); return
@@ -142,31 +136,35 @@ export default function GreenSwap() {
         setRequesting(true)
         try {
             const message = `📋 Buyer Details:\n• Name: ${buyerForm.name.trim()}\n• Roll No: ${buyerForm.rollNo.trim()}\n• Pickup Point: ${buyerForm.pickupPoint}\n\nInterested in: "${requestModal.title}"`
-            localDb.insert('swap_requests', {
+            await db.insert('swap_requests', {
                 listing_id: requestModal.id, buyer_id: user.id, seller_id: requestModal.user_id,
                 message, status: 'pending',
             })
             toast.success('Request sent with your details! The seller will be notified. 📬')
             setRequestModal(null)
-            loadListings()
+            await loadListings()
         } catch (err) { toast.error(err.message || 'Failed to send request') }
         finally { setRequesting(false) }
     }
 
-    function handleRequestAction(reqId, status) {
+    async function handleRequestAction(reqId, status) {
         try {
-            const req = localDb.getById('swap_requests', reqId)
-            localDb.update('swap_requests', reqId, { status })
+            const req = await db.getById('swap_requests', reqId)
+            await db.update('swap_requests', reqId, { status })
 
             if (status === 'accepted' && req) {
-                localDb.update('marketplace_listings', req.listing_id, { status: 'sold' })
+                await db.update('marketplace_listings', req.listing_id, { status: 'sold' })
                 // Update all other pending requests for this listing to 'rejected'
-                const otherReqs = localDb.query('swap_requests', r => r.listing_id === req.listing_id && r.id !== reqId && r.status === 'pending')
-                otherReqs.forEach(oReq => localDb.update('swap_requests', oReq.id, { status: 'rejected' }))
+                const otherReqs = await db.query('swap_requests', { listing_id: req.listing_id, status: 'pending' })
+                for (const oReq of otherReqs) {
+                    if (oReq.id !== reqId) {
+                        await db.update('swap_requests', oReq.id, { status: 'rejected' })
+                    }
+                }
             }
 
             toast.success(`Request ${status}`)
-            loadListings()
+            await loadListings()
         } catch (err) { toast.error(err.message) }
     }
 

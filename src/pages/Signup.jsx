@@ -12,7 +12,7 @@ const DEPARTMENTS = [
 
 export default function Signup() {
     const [form, setForm] = useState({
-        studentId: '', name: '', department: '',
+        studentId: '', email: '', name: '', department: '',
         year: '1', password: '', confirmPassword: ''
     })
     const [showPass, setShowPass] = useState(false)
@@ -27,7 +27,7 @@ export default function Signup() {
 
     async function handleSubmit(e) {
         e.preventDefault()
-        if (!form.studentId.trim() || !form.name.trim() || !form.department || !form.password) {
+        if (!form.studentId.trim() || !form.email.trim() || !form.name.trim() || !form.department || !form.password) {
             toast.warning('Please fill in all required fields')
             return
         }
@@ -44,13 +44,14 @@ export default function Signup() {
         try {
             await signUp({
                 studentId: form.studentId.trim(),
+                email: form.email.trim(),
                 name: form.name.trim(),
                 department: form.department,
                 year: form.year,
                 password: form.password,
             })
-            toast.success('Account created! Welcome to EcoVibe 🌱')
-            navigate('/dashboard')
+            toast.success('Account created! Please check your email to verify your account. 🌱')
+            navigate('/login')
         } catch (err) {
             const msg = err.message || 'Signup failed. Please try again.'
             toast.error(msg)
@@ -174,16 +175,16 @@ export default function Signup() {
                         boxShadow: '0 8px 40px rgba(0,0,0,0.06)'
                     }}>
                         <form onSubmit={handleSubmit}>
-                            {/* Student ID */}
+                            {/* Roll Number */}
                             <div style={{ marginBottom: '18px' }}>
                                 <label style={{
                                     display: 'block', fontSize: '13px', fontWeight: 600,
                                     color: '#374151', marginBottom: '8px', letterSpacing: '0.3px'
                                 }}>
-                                    Student ID <span style={{ color: '#ef4444' }}>*</span>
+                                    Roll Number <span style={{ color: '#ef4444' }}>*</span>
                                 </label>
                                 <input
-                                    type="text" placeholder="e.g. STU2024001"
+                                    type="text" placeholder="e.g. 727624bea001"
                                     value={form.studentId}
                                     onChange={e => update('studentId', e.target.value)}
                                     style={inputStyle} onFocus={handleFocus} onBlur={handleBlur}
@@ -202,6 +203,22 @@ export default function Signup() {
                                     type="text" placeholder="Your full name"
                                     value={form.name}
                                     onChange={e => update('name', e.target.value)}
+                                    style={inputStyle} onFocus={handleFocus} onBlur={handleBlur}
+                                />
+                            </div>
+
+                            {/* Email Address */}
+                            <div style={{ marginBottom: '18px' }}>
+                                <label style={{
+                                    display: 'block', fontSize: '13px', fontWeight: 600,
+                                    color: '#374151', marginBottom: '8px', letterSpacing: '0.3px'
+                                }}>
+                                    Email Address <span style={{ color: '#ef4444' }}>*</span>
+                                </label>
+                                <input
+                                    type="email" placeholder="Your genuine email"
+                                    value={form.email}
+                                    onChange={e => update('email', e.target.value)}
                                     style={inputStyle} onFocus={handleFocus} onBlur={handleBlur}
                                 />
                             </div>

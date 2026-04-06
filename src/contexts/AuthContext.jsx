@@ -1,11 +1,9 @@
 import { createContext, useContext, useEffect, useState } from 'react'
-import { localDb } from '../lib/localDb'
+import { insforge } from '../lib/insforge'
 
 const AuthContext = createContext({})
 
 export const useAuth = () => useContext(AuthContext)
-
-const SESSION_KEY = 'ecovibe_session'
 
 export function AuthProvider({ children }) {
     const [user, setUser] = useState(null)
@@ -16,75 +14,152 @@ export function AuthProvider({ children }) {
     })
 
     useEffect(() => {
-        // Restore session from localStorage
-        const savedUserId = localStorage.getItem(SESSION_KEY)
-        if (savedUserId) {
-            const prof = localDb.getById('profiles', savedUserId)
-            if (prof) {
-                setUser({ id: savedUserId })
-                setProfile(prof)
+        // Restore session from InsForge
+        const checkUser = async () => {
+            try {
+                const { data, error } = await insforge.auth.getCurrentUser()
+                if (data?.user) {
+                    setUser(data.user)
+                    // Fetch profile from our public.profiles table
+                    let { data: profData } = await insforge.database
+                        .from('profiles')
+                        .select('*')
+                        .eq('id', data.user.id)
+                        .maybeSingle()
+                    
+                    if (!profData) {
+                        // Self-healing: Create missing profile
+                        const { data: newProf, error: insErr } = await insforge.database
+                            .from('profiles')
+                            .insert({
+                                id: data.user.id,
+                                name: data.user.name || 'New User',
+                                contact_email: data.user.email,
+                                eco_points: 10,
+                                role: 'student'
+                            })
+                            .select()
+                            .single()
+                        if (!insErr) profData = newProf
+                    }
+                    
+                    setProfile(profData || { id: data.user.id, name: data.user.name || 'User' })
+                }
+            } catch (err) {
+                console.error('Session check failed:', err)
+            } finally {
+                setLoading(false)
             }
         }
-        setLoading(false)
+        checkUser()
     }, [])
 
-    function fetchProfile(userId) {
-        const prof = localDb.getById('profiles', userId)
-        setProfile(prof)
-    }
-
-    function signUp({ studentId, name, department, year, password }) {
-        // Check if student ID already exists
-        const existing = localDb.query('profiles', p => p.student_id === studentId)
-        if (existing.length > 0) {
-            throw new Error('An account with this Student ID already exists')
-        }
-
-        // Create the profile
-        const newProfile = localDb.insert('profiles', {
-            student_id: studentId,
-            name,
-            department,
-            year: parseInt(year),
-            password, // stored in localStorage (acceptable for demo/offline use)
-            eco_points: 0,
-            streak: 0,
-            last_activity_date: null,
-            role: 'student',
-            avatar_url: null,
+    async function signUp({ studentId, email, name, department, year, password }) {
+        const cleanStudentId = studentId.trim()
+        const loginEmail = email ? email.trim().toLowerCase() : `${cleanStudentId.toLowerCase()}@ecovibe.campus`
+        
+        const { data, error } = await insforge.auth.signUp({
+            email: loginEmail,
+            password,
+            name
         })
 
-        // Set session
-        const usr = { id: newProfile.id }
-        setUser(usr)
-        setProfile(newProfile)
-        localStorage.setItem(SESSION_KEY, newProfile.id)
+        if (error) throw error
 
-        return { user: usr }
+        if (data?.user) {
+            // Create entry in public.profiles table
+            const { error: profError } = await insforge.database
+                .from('profiles')
+                .insert({
+                    id: data.user.id,
+                    student_id: cleanStudentId,
+                    contact_email: loginEmail,
+                    name,
+                    department,
+                    year,
+                    eco_points: 10, // 10 point welcome bonus
+                    role: 'student'
+                })
+            
+            if (profError) console.error('Profile creation error:', profError)
+
+            setUser(data.user)
+            setProfile({ 
+                id: data.user.id, 
+                student_id: cleanStudentId, 
+                name, 
+                department, 
+                year,
+                eco_points: 10, 
+                role: 'student' 
+            })
+        }
+
+        return data
     }
 
-    function signIn({ studentId, password }) {
-        const profiles = localDb.query('profiles', p => p.student_id === studentId)
-        if (profiles.length === 0) {
-            throw new Error('Invalid credentials. No account found with this Student ID.')
-        }
-        const prof = profiles[0]
-        if (prof.password !== password) {
-            throw new Error('Invalid credentials. Incorrect password.')
+    async function signIn({ studentId, password }) {
+        const cleanId = studentId.trim()
+        let loginEmail = cleanId
+
+        if (!cleanId.includes('@')) {
+            // Resolve Roll Number to Email
+            const { data } = await insforge.database
+                .from('profiles')
+                .select('contact_email')
+                .eq('student_id', cleanId)
+                .maybeSingle()
+            
+            if (data?.contact_email) {
+                loginEmail = data.contact_email.trim()
+            } else {
+                loginEmail = `${cleanId.toLowerCase()}@ecovibe.campus`
+            }
+        } else {
+            loginEmail = cleanId.toLowerCase()
         }
 
-        const usr = { id: prof.id }
-        setUser(usr)
-        setProfile(prof)
-        localStorage.setItem(SESSION_KEY, prof.id)
-        return { user: usr }
+        const { data, error } = await insforge.auth.signInWithPassword({
+            email: loginEmail,
+            password
+        })
+
+        if (error) throw error
+
+        if (data?.user) {
+            setUser(data.user)
+            let { data: profData } = await insforge.database
+                .from('profiles')
+                .select('*')
+                .eq('id', data.user.id)
+                .maybeSingle()
+            
+            if (!profData) {
+                // Self-healing: Create missing profile upon login
+                const { data: newProf } = await insforge.database
+                    .from('profiles')
+                    .insert({
+                        id: data.user.id,
+                        name: data.user.name || 'New User',
+                        contact_email: data.user.email,
+                        eco_points: 10,
+                        role: 'student'
+                    })
+                    .select()
+                    .single()
+                profData = newProf
+            }
+            setProfile(profData)
+        }
+        return data
     }
 
-    function signOut() {
+
+    async function signOut() {
+        await insforge.auth.signOut()
         setUser(null)
         setProfile(null)
         setIsAdminAuth(false)
-        localStorage.removeItem(SESSION_KEY)
         localStorage.removeItem('ecovibe_admin')
     }
 
@@ -99,24 +174,38 @@ export function AuthProvider({ children }) {
         localStorage.removeItem('ecovibe_admin')
     }
 
-    function updateProfile(updates) {
+    async function updateProfile(updates) {
         if (!user) return
-        const updated = localDb.update('profiles', user.id, updates)
-        setProfile(updated)
-        return updated
+        
+        // Update public profiles table
+        const { data, error } = await insforge.database
+            .from('profiles')
+            .update(updates)
+            .eq('id', user.id)
+            .select()
+            .single()
+        
+        if (error) throw error
+        
+        setProfile(data)
+        return data
     }
 
     const value = {
         user,
         profile,
         loading,
-        connectionError: false, // never a connection error with localStorage
+        connectionError: false,
         signUp,
         signIn,
         signOut,
         updateProfile,
-        fetchProfile: () => user && fetchProfile(user.id),
-        isAdmin: profile?.role === 'admin',
+        fetchProfile: async () => {
+            if (!user) return
+            const { data } = await insforge.database.from('profiles').select('*').eq('id', user.id).single()
+            setProfile(data)
+        },
+        isAdmin: profile?.role === 'admin' || isAdminAuth,
         isAdminAuth,
         setAdminAuth,
         adminLogout,

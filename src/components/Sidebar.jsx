@@ -1,12 +1,15 @@
 import { NavLink } from 'react-router-dom'
 import {
-    LayoutDashboard, Activity, Recycle, Users, Trophy, Gift, User
+    LayoutDashboard, Activity, Recycle, Users, Trophy, Gift, User,
+    BarChart3, Trash2, Info, Leaf
 } from 'lucide-react'
 
 const NAV_ITEMS = [
     { to: '/dashboard', icon: LayoutDashboard, label: 'Dashboard' },
     { to: '/tracking', icon: Activity, label: 'CO2 Tracking' },
     { to: '/greenswap', icon: Recycle, label: 'GreenSwap' },
+    { to: '/complaints', icon: Trash2, label: 'Complaints' },
+    { to: '/eco-drives', icon: Leaf, label: 'Eco Drives' },
     { to: '/feed', icon: Users, label: 'Social Feed' },
     { to: '/challenges', icon: Trophy, label: 'Challenges' },
     { to: '/rewards', icon: Gift, label: 'Rewards' },

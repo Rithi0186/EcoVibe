@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react'
 import { useAuth } from '../contexts/AuthContext'
 import { useToast } from '../components/Toast'
-import { localDb } from '../lib/localDb'
+import { db } from '../lib/db'
 import { StatSkeleton } from '../components/LoadingSkeleton'
 import Modal from '../components/Modal'
 import {
@@ -32,56 +32,62 @@ export default function Challenges() {
     const [proofPreview, setProofPreview] = useState(null)
     const [submitting, setSubmitting] = useState(false)
 
-    useEffect(() => { loadData() }, [])
+    useEffect(() => { loadData() }, [user])
 
-    // Auto-refresh when tab becomes visible or page gains focus
-    useEffect(() => {
-        function handleRefresh() {
-            if (document.visibilityState === 'visible') refreshCompletions()
-        }
-        document.addEventListener('visibilitychange', handleRefresh)
-        window.addEventListener('focus', refreshCompletions)
-
-        // Also poll every 15 seconds for live updates
-        const interval = setInterval(refreshCompletions, 15000)
-
-        return () => {
-            document.removeEventListener('visibilitychange', handleRefresh)
-            window.removeEventListener('focus', refreshCompletions)
-            clearInterval(interval)
-        }
-    }, [])
-
-    // Real-time subscription: auto-update when admin approves/rejects
-    // No realtime subscription needed with localStorage
-
-    function refreshCompletions() {
+    async function loadData() {
         try {
-            const data = localDb.query('challenge_completions', c => c.user_id === user.id)
-            setCompletions(data)
-        } catch (err) { console.error(err) }
-    }
+            if (!user?.id) return
+            const chsRaw = await db.query('challenges', { active: true })
+            const comps = await db.query('challenge_completions', { user_id: user.id })
+            const bgs = await db.getAll('badges')
+            const ubs_raw = await db.query('user_badges', { user_id: user.id })
+            
+            const ubs = ubs_raw.map(ub => ({ 
+                ...ub, 
+                badges: bgs.find(b => b.id === ub.badge_id) 
+            }))
 
-    function loadData() {
-        try {
-            const chs = localDb.query('challenges', c => c.active)
-            const comps = localDb.query('challenge_completions', c => c.user_id === user.id)
-            const bgs = localDb.getAll('badges')
-            const ubs = localDb.query('user_badges', ub => ub.user_id === user.id)
-                .map(ub => ({ ...ub, badges: localDb.getById('badges', ub.badge_id) }))
-            setChallenges(chs)
+            // Filtering logic for rotating challenges
+            const todayDate = new Date()
+            const todayStr = todayDate.toISOString().split('T')[0]
+            const dayNum = todayDate.getDay() // 0=Sun, 6=Sat
+            const isWeekend = dayNum === 0 || dayNum === 6
+            
+            const dailyPool = chsRaw.filter(c => c.frequency === 'daily')
+            const weeklyPool = chsRaw.filter(c => c.frequency === 'weekly')
+
+            // Using date as seed for stable daily rotation
+            const dailySeed = todayStr.split('-').join('')
+            const rotatingDaily = dailyPool.sort((a,b) => {
+                const hash = (s) => s.split('').reduce((a,b)=>{a=((a<<5)-a)+b.charCodeAt(0);return a&a},0)
+                return hash(a.id + dailySeed) - hash(b.id + dailySeed)
+            }).slice(0, 3)
+
+            // Weekly rotation only on weekends
+            let filteredChallenges = [...rotatingDaily]
+            if (isWeekend) {
+                const weeklySeed = todayStr.substring(0, 7) // same for the month segment to keep it somewhat stable
+                const rotatingWeekly = weeklyPool.sort((a,b) => {
+                    const hash = (s) => s.split('').reduce((a,b)=>{a=((a<<5)-a)+b.charCodeAt(0);return a&a},0)
+                    return hash(a.id + weeklySeed) - hash(b.id + weeklySeed)
+                }).slice(0, 2)
+                filteredChallenges = [...filteredChallenges, ...rotatingWeekly]
+            }
+
+            setChallenges(filteredChallenges)
             setCompletions(comps)
             setBadges(bgs)
             setUserBadges(ubs)
 
-            checkAndAwardBadges(bgs, ubs, comps)
+            await checkAndAwardBadges(bgs, ubs, comps)
         } catch (err) { console.error(err) }
         finally { setLoading(false) }
     }
 
-    function checkAndAwardBadges(allBadges, earnedBadges, userCompletions) {
+    async function checkAndAwardBadges(allBadges, earnedBadges, userCompletions) {
+        if (!user) return
         const earnedIds = new Set(earnedBadges.map(ub => ub.badge_id))
-        const approvedCompletions = userCompletions.filter(c => c.status === 'approved' || !c.status)
+        const approvedCompletions = userCompletions.filter(c => c.status === 'approved')
 
         for (const badge of allBadges) {
             if (earnedIds.has(badge.id)) continue
@@ -89,16 +95,19 @@ export default function Challenges() {
             let met = false
             switch (badge.requirement) {
                 case 'first_log':
-                    met = localDb.count('co2_logs', l => l.user_id === user.id) >= 1
+                    const logCount = await db.count('co2_logs', { user_id: user.id })
+                    met = logCount >= 1
                     break
                 case '10_challenges':
                     met = approvedCompletions.length >= 10
                     break
                 case 'first_swap':
-                    met = localDb.count('swap_requests', r => r.buyer_id === user.id && r.status === 'accepted') >= 1
+                    const swapCount = await db.count('swap_requests', { buyer_id: user.id, status: 'accepted' })
+                    met = swapCount >= 1
                     break
                 case '5_posts':
-                    met = localDb.count('posts', p => p.user_id === user.id) >= 5
+                    const postCount = await db.count('posts', { user_id: user.id })
+                    met = postCount >= 5
                     break
                 case '500_points':
                     met = (profile?.eco_points || 0) >= 500
@@ -107,17 +116,24 @@ export default function Challenges() {
                     met = (profile?.streak || 0) >= 7
                     break
                 case 'tree_reward':
-                    met = localDb.count('redemptions', r => r.user_id === user.id) >= 1
+                    const redemptionCount = await db.count('redemptions', { user_id: user.id })
+                    met = redemptionCount >= 1
                     break
             }
 
             if (met) {
-                localDb.insertIfNotExists('user_badges', { user_id: user.id, badge_id: badge.id },
-                    ub => ub.user_id === user.id && ub.badge_id === badge.id)
-                toast.success(`🏆 Badge Unlocked: ${badge.name}!`)
-                const ubs = localDb.query('user_badges', ub => ub.user_id === user.id)
-                    .map(ub => ({ ...ub, badges: localDb.getById('badges', ub.badge_id) }))
-                setUserBadges(ubs)
+                try {
+                    await db.insert('user_badges', { user_id: user.id, badge_id: badge.id })
+                    toast.success(`🏆 Badge Unlocked: ${badge.name}!`)
+                    const updatedUbsRaw = await db.query('user_badges', { user_id: user.id })
+                    const updatedUbs = updatedUbsRaw.map(ub => ({ 
+                        ...ub, 
+                        badges: allBadges.find(b => b.id === ub.badge_id) 
+                    }))
+                    setUserBadges(updatedUbs)
+                } catch (e) {
+                    // Ignore if already exists
+                }
             }
         }
     }
@@ -128,7 +144,7 @@ export default function Challenges() {
             c.challenge_id === challengeId && c.completed_at?.split('T')[0] === today
         )
         if (!completion) return null
-        return completion.status || 'approved' // fallback for old records without status
+        return completion.status || 'approved'
     }
 
     function isCompletedToday(challengeId) {
@@ -176,38 +192,41 @@ export default function Challenges() {
         reader.readAsDataURL(file)
     }
 
-    function submitProof() {
+    async function submitProof() {
         if (!proofFile || !proofModal) {
             toast.warning('Please upload a photo as proof')
             return
         }
         setSubmitting(true)
         try {
-            // Convert proof image to base64
-            const reader = new FileReader()
-            reader.onload = (ev) => {
-                const proofUrl = ev.target.result
-                localDb.insert('challenge_completions', {
-                    challenge_id: proofModal.id,
-                    user_id: user.id,
-                    proof_url: proofUrl,
-                    status: 'pending',
-                    completed_at: new Date().toISOString(),
-                })
-                toast.success('Proof submitted! ⏳ Waiting for admin approval to earn points.')
-                setProofModal(null)
-                setProofFile(null)
-                setProofPreview(null)
-                loadData()
-                setSubmitting(false)
-            }
-            reader.readAsDataURL(proofFile)
-        } catch (err) { toast.error(err.message || 'Failed to submit'); setSubmitting(false) }
+            const fileName = `${user.id}/${Date.now()}-${proofFile.name.replace(/\s+/g, '_')}`
+            const data = await db.upload('challenge_proofs', fileName, proofFile)
+            const proofUrl = data.url
+
+            await db.insert('challenge_completions', {
+                challenge_id: proofModal.id,
+                user_id: user.id,
+                proof_url: proofUrl,
+                status: 'pending',
+                completed_at: new Date().toISOString(),
+            })
+
+            toast.success('Proof submitted! ⏳ Waiting for admin approval.')
+            setProofModal(null)
+            setProofFile(null)
+            setProofPreview(null)
+            await loadData()
+        } catch (err) {
+            toast.error(err.message || 'Failed to submit')
+        } finally {
+            setSubmitting(false)
+        }
     }
 
     function getIcon(iconName) {
-        const name = iconName?.split('-').map(w => w.charAt(0).toUpperCase() + w.slice(1)).join('')
-        return LucideIcons[name] || Star
+        if (!iconName) return Star
+        const camelName = iconName.split('-').map(w => w.charAt(0).toUpperCase() + w.slice(1)).join('')
+        return LucideIcons[camelName] || Star
     }
 
     if (loading) {
@@ -218,8 +237,8 @@ export default function Challenges() {
         )
     }
 
-    const dailyChallenges = challenges.filter(c => c.frequency === 'daily')
-    const weeklyChallenges = challenges.filter(c => c.frequency === 'weekly')
+    const todayDaily = challenges.filter(c => c.frequency === 'daily')
+    const weekendWeekly = challenges.filter(c => c.frequency === 'weekly')
 
     const approvedCount = completions.filter(c => c.status === 'approved' || !c.status).length
     const pendingCount = completions.filter(c => c.status === 'pending').length
@@ -299,7 +318,7 @@ export default function Challenges() {
                     {submitted ? (
                         renderStatusBadge(status)
                     ) : (
-                        <button onClick={() => openProofModal(ch)} disabled={completing === ch.id} style={{
+                        <button onClick={() => openProofModal(ch)} style={{
                             padding: '6px 14px', background: accent.btnBg, color: 'white',
                             borderRadius: '8px', fontSize: '12px', fontWeight: 500,
                             border: 'none', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '4px'
@@ -347,21 +366,32 @@ export default function Challenges() {
             <div>
                 <h2 style={{ fontSize: '18px', fontWeight: 700, fontFamily: 'Poppins, sans-serif', display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '16px' }}>
                     <Calendar size={18} color="#4caf50" /> Daily Challenges
+                    <span style={{ fontSize: '12px', fontWeight: 400, color: '#9ca3af', marginLeft: 'auto' }}>Refreshing in {24 - new Date().getHours()}h</span>
                 </h2>
                 <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
-                    {dailyChallenges.map(ch => renderChallenge(ch, true))}
+                    {todayDaily.length > 0 ? (
+                        todayDaily.map(ch => renderChallenge(ch, true))
+                    ) : (
+                        <div style={{ ...card, padding: '32px', textAlign: 'center', background: 'rgba(255,255,255,0.4)' }}>
+                            <Star size={32} color="#9ca3af" style={{ margin: '0 auto 12px', opacity: 0.5 }} />
+                            <p style={{ color: '#9ca3af' }}>No daily challenges available for today.</p>
+                        </div>
+                    )}
                 </div>
             </div>
 
             {/* Weekly */}
-            <div>
-                <h2 style={{ fontSize: '18px', fontWeight: 700, fontFamily: 'Poppins, sans-serif', display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '16px' }}>
-                    <Target size={18} color="#8b5cf6" /> Weekly Challenges
-                </h2>
-                <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
-                    {weeklyChallenges.map(ch => renderChallenge(ch, false))}
+            {weekendWeekly.length > 0 && (
+                <div>
+                    <h2 style={{ fontSize: '18px', fontWeight: 700, fontFamily: 'Poppins, sans-serif', display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '16px' }}>
+                        <Target size={18} color="#8b5cf6" /> Weekend Specials (Weekly)
+                        <span style={{ fontSize: '11px', fontWeight: 600, color: '#8b5cf6', background: '#f3e8ff', padding: '2px 8px', borderRadius: '12px', marginLeft: 'auto' }}>ACTIVE</span>
+                    </h2>
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+                        {weekendWeekly.map(ch => renderChallenge(ch, false))}
+                    </div>
                 </div>
-            </div>
+            )}
 
             {/* Badges */}
             <div>
@@ -382,7 +412,7 @@ export default function Challenges() {
                                     background: earned ? 'linear-gradient(135deg, #fbbf24, #d97706)' : '#f3f4f6',
                                     boxShadow: earned ? '0 4px 12px rgba(251,191,36,0.4)' : 'none'
                                 }}>
-                                    {earned ? <Award size={24} color="white" /> : <Lock size={20} color="#9ca3af" />}
+                                    {earned ? <LucideIcons.Award size={24} color="white" /> : <LucideIcons.Lock size={20} color="#9ca3af" />}
                                 </div>
                                 <p style={{ fontSize: '14px', fontWeight: 600 }}>{badge.name}</p>
                                 <p style={{ fontSize: '10px', color: '#9ca3af', marginTop: '4px' }}>{badge.description}</p>

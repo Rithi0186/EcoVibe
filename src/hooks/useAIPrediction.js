@@ -1,5 +1,5 @@
 import { useState, useEffect, useMemo } from 'react'
-import { localDb } from '../lib/localDb'
+import { db } from '../lib/db'
 import { computeFeatures } from '../lib/featureEngine'
 import { predictNextDayCO2 } from '../lib/aiPredictor'
 import { detectAnomaly } from '../lib/anomalyDetector'
@@ -17,7 +17,7 @@ export function useAIPrediction(userId, providedLogs) {
     const [loading, setLoading] = useState(!providedLogs)
     const [error, setError] = useState(null)
 
-    // Fetch logs from localStorage if not provided
+    // Fetch logs from InsForge if not provided
     useEffect(() => {
         if (providedLogs) {
             setLogs(providedLogs)
@@ -29,18 +29,24 @@ export function useAIPrediction(userId, providedLogs) {
             return
         }
 
-        try {
-            const data = localDb.query('co2_logs', l => l.user_id === userId)
-                .sort((a, b) => new Date(b.created_at) - new Date(a.created_at))
-                .slice(0, 200)
-            setLogs(data)
-        } catch (err) {
-            console.warn('AI Prediction: failed to fetch logs', err.message)
-            setError(err.message)
-            setLogs([])
-        } finally {
-            setLoading(false)
+        async function fetchLogs() {
+            setLoading(true)
+            try {
+                const data = await db.query('co2_logs', { user_id: userId })
+                const sorted = data
+                    .sort((a, b) => new Date(b.created_at) - new Date(a.created_at))
+                    .slice(0, 200)
+                setLogs(sorted)
+            } catch (err) {
+                console.warn('AI Prediction: failed to fetch logs', err.message)
+                setError(err.message)
+                setLogs([])
+            } finally {
+                setLoading(false)
+            }
         }
+
+        fetchLogs()
     }, [userId, providedLogs])
 
     // Run the AI pipeline (memoised)

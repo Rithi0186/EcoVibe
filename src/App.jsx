@@ -14,6 +14,8 @@ import GreenSwap from './pages/GreenSwap'
 import Feed from './pages/Feed'
 import Challenges from './pages/Challenges'
 import Rewards from './pages/Rewards'
+import WasteReporting from './pages/WasteReporting'
+import EcoDrives from './pages/EcoDrives'
 import Profile from './pages/Profile'
 
 export default function App() {
@@ -45,6 +47,8 @@ export default function App() {
               <Route path="/dashboard" element={<Dashboard />} />
               <Route path="/tracking" element={<CO2Tracking />} />
               <Route path="/greenswap" element={<GreenSwap />} />
+              <Route path="/complaints" element={<WasteReporting />} />
+              <Route path="/eco-drives" element={<EcoDrives />} />
               <Route path="/feed" element={<Feed />} />
               <Route path="/challenges" element={<Challenges />} />
               <Route path="/rewards" element={<Rewards />} />

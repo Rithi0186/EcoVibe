@@ -4,8 +4,8 @@ import { useAuth } from '../contexts/AuthContext'
 import { useToast } from '../components/Toast'
 import { Leaf, LogIn, Loader2, Eye, EyeOff, Footprints, Star, Shield, ChevronRight, Users } from 'lucide-react'
 
-const ADMIN_ID = 'Adim@123'
-const ADMIN_PW = 'Adim#123'
+const ADMIN_ID = 'Mcet'
+const ADMIN_PW = '123456'
 
 export default function Login() {
     const [mode, setMode] = useState('student') // 'student' or 'admin'
@@ -189,11 +189,11 @@ export default function Login() {
                                     display: 'block', fontSize: '13px', fontWeight: 600,
                                     color: '#374151', marginBottom: '8px', letterSpacing: '0.3px'
                                 }}>
-                                    {isAdmin ? 'Admin ID' : 'Student ID'}
+                                    {isAdmin ? 'Admin ID' : 'Roll Number / Email'}
                                 </label>
                                 <input
                                     type="text"
-                                    placeholder={isAdmin ? 'Enter admin ID' : 'e.g. STU2024001'}
+                                    placeholder={isAdmin ? 'Enter admin ID' : 'e.g. 21BCE1234 or address@email.com'}
                                     value={studentId}
                                     onChange={e => setStudentId(e.target.value)}
                                     autoComplete="username"

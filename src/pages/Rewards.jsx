@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react'
 import { useAuth } from '../contexts/AuthContext'
 import { useToast } from '../components/Toast'
-import { localDb } from '../lib/localDb'
+import { db } from '../lib/db'
 import { StatSkeleton } from '../components/LoadingSkeleton'
 import { QRCodeSVG } from 'qrcode.react'
 import Modal from '../components/Modal'
@@ -29,20 +29,27 @@ export default function Rewards() {
 
     useEffect(() => { loadData() }, [])
 
-    function loadData() {
+    async function loadData() {
         try {
-            const rews = localDb.query('rewards', r => r.active)
+            const allRewards = await db.getAll('rewards')
+            const activeRewards = allRewards.filter(r => r.active)
                 .sort((a, b) => (a.points_cost || 0) - (b.points_cost || 0))
-            setRewards(rews)
-            const reds = localDb.query('redemptions', r => r.user_id === user.id)
+            setRewards(activeRewards)
+
+            const reds = await db.query('redemptions', { user_id: user.id })
+            const enriched = await Promise.all(reds
                 .sort((a, b) => new Date(b.created_at) - new Date(a.created_at))
-                .map(r => ({ ...r, rewards: localDb.getById('rewards', r.reward_id) }))
-            setRedemptions(reds)
+                .map(async r => ({ 
+                    ...r, 
+                    rewards: await db.getById('rewards', r.reward_id) 
+                }))
+            )
+            setRedemptions(enriched)
         } catch (err) { console.error(err) }
         finally { setLoading(false) }
     }
 
-    function redeemReward(reward) {
+    async function redeemReward(reward) {
         if ((profile?.eco_points || 0) < reward.points_cost) {
             toast.warning(`Not enough points! Need ${reward.points_cost - (profile?.eco_points || 0)} more.`)
             return
@@ -50,13 +57,17 @@ export default function Rewards() {
         setRedeeming(reward.id)
         try {
             const code = `EV-${Date.now().toString(36).toUpperCase()}-${Math.random().toString(36).slice(2, 6).toUpperCase()}`
-            localDb.insert('redemptions', {
-                reward_id: reward.id, user_id: user.id, points_spent: reward.points_cost, code, status: 'active',
+            await db.insert('redemptions', {
+                reward_id: reward.id, 
+                user_id: user.id, 
+                points_spent: reward.points_cost, 
+                code, 
+                status: 'active',
             })
-            updateProfile({ eco_points: (profile?.eco_points || 0) - reward.points_cost })
+            await updateProfile({ eco_points: (profile?.eco_points || 0) - reward.points_cost })
             setShowCode({ reward, code })
             toast.success('Reward redeemed! 🎉')
-            loadData()
+            await loadData()
         } catch (err) { toast.error(err.message || 'Failed to redeem') }
         finally { setRedeeming(null) }
     }

@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react'
 import { useAuth } from '../contexts/AuthContext'
-import { localDb } from '../lib/localDb'
+import { db } from '../lib/db'
 import { generateEcoTips } from '../lib/ecoTips'
 import { StatSkeleton, ChartSkeleton } from '../components/LoadingSkeleton'
 import {
@@ -9,7 +9,8 @@ import {
 } from 'recharts'
 import {
     Leaf, Flame, TrendingDown, Trophy, Activity,
-    Footprints, Utensils, Zap, Trash2, Lightbulb
+    Footprints, Utensils, Zap, Trash2, Lightbulb,
+    ShoppingBag, MessageSquare, AlertTriangle
 } from 'lucide-react'
 
 const COLORS = ['#4CAF50', '#66BB6A', '#81C784', '#A5D6A7']
@@ -34,13 +35,13 @@ export default function Dashboard() {
 
     useEffect(() => { if (user) loadDashboard() }, [user])
 
-    function loadDashboard() {
+    async function loadDashboard() {
         try {
             const now = new Date()
             const monthStart = new Date(now.getFullYear(), now.getMonth(), 1).toISOString()
             const weekStart = new Date(now.getTime() - 7 * 86400000).toISOString()
 
-            const allLogs = localDb.query('co2_logs', l => l.user_id === user.id)
+            const allLogs = await db.query('co2_logs', { user_id: user.id })
             const monthLogs = allLogs.filter(l => l.created_at >= monthStart)
 
             const monthlyCO2 = monthLogs.reduce((s, l) => s + Number(l.co2_kg || 0), 0)
@@ -65,13 +66,25 @@ export default function Dashboard() {
             })
             setWeeklyData(Object.entries(dayMap).map(([day, co2]) => ({ day, co2: parseFloat(co2.toFixed(2)) })))
 
-            const leaders = localDb.getAll('profiles')
+            const leaders = await db.getAll('profiles')
+            const sortedLeaders = (leaders || [])
                 .sort((a, b) => (b.eco_points || 0) - (a.eco_points || 0))
                 .slice(0, 10)
-            setLeaderboard(leaders)
-            setRank(leaders.findIndex(l => l.id === user.id) + 1 || '—')
+            setLeaderboard(sortedLeaders)
+            setRank(sortedLeaders.findIndex(l => l.id === user.id) + 1 || '—')
 
-            const recent = allLogs
+            // Fetch other activities
+            const postsPromise = db.query('posts', { user_id: user.id }).catch(() => [])
+            const reportsPromise = db.query('waste_reports', { user_id: user.id }).catch(() => [])
+            const listingsPromise = db.query('marketplace_listings', { user_id: user.id }).catch(() => [])
+            const [posts, reports, listings] = await Promise.all([postsPromise, reportsPromise, listingsPromise])
+
+            const formattedLogs = allLogs.map(l => ({ ...l, act_type: 'co2_log', title: `${l.category} Activity`, subtitle: `${Number(l.co2_kg).toFixed(1)} kg CO2`, points: l.points_earned, Icon: CAT_ICONS[l.category] || Activity }))
+            const formattedPosts = posts.map(p => ({ ...p, act_type: 'post', title: 'Community Post', subtitle: p.content.substring(0, 30) + (p.content.length > 30 ? '...' : ''), points: p.points_awarded || 0, Icon: MessageSquare }))
+            const formattedReports = reports.map(r => ({ ...r, act_type: 'report', title: 'Submitted Report', subtitle: r.category || 'General', points: r.points_awarded || 0, Icon: AlertTriangle }))
+            const formattedListings = listings.map(l => ({ ...l, act_type: 'listing', title: 'GreenSwap Item', subtitle: l.title, points: 0, Icon: ShoppingBag }))
+
+            const recent = [...formattedLogs, ...formattedPosts, ...formattedReports, ...formattedListings]
                 .sort((a, b) => new Date(b.created_at) - new Date(a.created_at))
                 .slice(0, 5)
             setRecentActivity(recent)
@@ -223,7 +236,7 @@ export default function Dashboard() {
                     {recentActivity.length > 0 ? (
                         <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
                             {recentActivity.map(log => {
-                                const Icon = CAT_ICONS[log.category] || Activity
+                                const Icon = log.Icon || Activity
                                 return (
                                     <div key={log.id} style={{
                                         display: 'flex', alignItems: 'center', gap: '12px',
@@ -236,13 +249,13 @@ export default function Dashboard() {
                                             <Icon size={14} color="#43a047" />
                                         </div>
                                         <div style={{ flex: 1, minWidth: 0 }}>
-                                            <p style={{ fontSize: '14px', fontWeight: 500, color: '#374151', textTransform: 'capitalize' }}>{log.category}</p>
-                                            <p style={{ fontSize: '12px', color: '#9ca3af' }}>{new Date(log.created_at).toLocaleDateString()}</p>
+                                            <p style={{ fontSize: '14px', fontWeight: 500, color: '#374151', textTransform: 'capitalize' }}>{log.title}</p>
+                                            <p style={{ fontSize: '12px', color: '#9ca3af' }}>{new Date(log.created_at).toLocaleDateString()} · {log.act_type === 'co2_log' ? '' : log.subtitle}</p>
                                         </div>
                                         <div style={{ textAlign: 'right' }}>
-                                            <p style={{ fontSize: '14px', fontWeight: 600, color: '#374151' }}>{Number(log.co2_kg).toFixed(1)} kg</p>
-                                            {log.points_earned > 0 && (
-                                                <p style={{ fontSize: '12px', color: '#4caf50' }}>+{log.points_earned} pts</p>
+                                            {log.act_type === 'co2_log' && <p style={{ fontSize: '14px', fontWeight: 600, color: '#374151' }}>{log.subtitle}</p>}
+                                            {log.points > 0 && (
+                                                <p style={{ fontSize: '12px', color: '#4caf50' }}>+{log.points} pts</p>
                                             )}
                                         </div>
                                     </div>

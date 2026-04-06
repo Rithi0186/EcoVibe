@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react'
 import { useAuth } from '../contexts/AuthContext'
 import { useToast } from '../components/Toast'
-import { localDb } from '../lib/localDb'
+import { db } from '../lib/db'
 import { ListSkeleton } from '../components/LoadingSkeleton'
 import {
     MessageSquare, Heart, Send, Image, X, Loader2,
@@ -23,7 +23,7 @@ const inputStyle = {
 }
 
 export default function Feed() {
-    const { user, profile } = useAuth()
+    const { user, profile, updateProfile } = useAuth()
     const toast = useToast()
     const [posts, setPosts] = useState([])
     const [loading, setLoading] = useState(true)
@@ -36,79 +36,80 @@ export default function Feed() {
 
     useEffect(() => { loadPosts() }, [])
 
-    function loadPosts() {
+    async function loadPosts() {
         try {
-            const allPosts = localDb.getAll('posts')
+            const allPosts = await db.getAll('posts')
+            const sorted = allPosts
                 .sort((a, b) => new Date(b.created_at) - new Date(a.created_at))
                 .slice(0, 30)
+            
             // Enrich posts with profile, likes, comments
-            const enriched = allPosts.map(post => {
-                const profile = localDb.getById('profiles', post.user_id)
-                const likes = localDb.query('post_likes', l => l.post_id === post.id)
-                const comments = localDb.query('post_comments', c => c.post_id === post.id)
-                    .map(c => ({ ...c, profiles: localDb.getById('profiles', c.user_id) }))
-                return { ...post, profiles: profile, post_likes: likes, post_comments: comments }
-            })
+            const enriched = await Promise.all(sorted.map(async post => {
+                const userProfile = await db.getById('profiles', post.user_id)
+                const likes = await db.query('post_likes', { post_id: post.id })
+                const rawComments = await db.query('post_comments', { post_id: post.id })
+                const enrichedComments = await Promise.all(rawComments.map(async c => ({
+                    ...c, 
+                    profiles: await db.getById('profiles', c.user_id)
+                })))
+                return { ...post, profiles: userProfile, post_likes: likes, post_comments: enrichedComments }
+            }))
             setPosts(enriched)
         } catch (err) { console.error(err) }
         finally { setLoading(false) }
     }
 
-    function handlePost(e) {
+    async function handlePost(e) {
         e.preventDefault()
         if (!newPost.trim()) { toast.warning('Write something to share!'); return }
         setPosting(true)
         try {
             let imageUrl = null
             if (imageFile) {
-                // Convert image to base64 data URL for localStorage storage
-                const reader = new FileReader()
-                reader.onload = (ev) => {
-                    imageUrl = ev.target.result
-                    localDb.insert('posts', {
-                        user_id: user.id, student_id: profile.student_id,
-                        content: newPost.trim(), image_url: imageUrl, tags: selectedTags,
-                    })
-                    toast.success('Post shared! 🌿')
-                    setNewPost(''); setSelectedTags([]); setImageFile(null)
-                    loadPosts()
-                    setPosting(false)
-                }
-                reader.readAsDataURL(imageFile)
-                return
+                const fileName = `${user.id}-${Date.now()}-${imageFile.name}`
+                const data = await db.upload('post_images', fileName, imageFile)
+                imageUrl = data.url
             }
-            localDb.insert('posts', {
-                user_id: user.id, student_id: profile.student_id,
-                content: newPost.trim(), image_url: null, tags: selectedTags,
+            await db.insert('posts', {
+                user_id: user.id, 
+                student_id: profile?.student_id,
+                content: newPost.trim(), 
+                image_url: imageUrl, 
+                tags: selectedTags,
+                points_awarded: 5,
             })
-            toast.success('Post shared! 🌿')
+            // Update profile points
+            const newPoints = (profile?.eco_points || 0) + 5
+            await updateProfile({ eco_points: newPoints })
+            toast.success('Post shared! +5 EcoPoints 🌿')
             setNewPost(''); setSelectedTags([]); setImageFile(null)
-            loadPosts()
+            await loadPosts()
         } catch (err) { toast.error(err.message) }
         finally { setPosting(false) }
     }
 
-    function toggleLike(post) {
+    async function toggleLike(post) {
         const liked = post.post_likes?.some(l => l.user_id === user.id)
         try {
             if (liked) {
-                localDb.removeWhere('post_likes', l => l.post_id === post.id && l.user_id === user.id)
+                const like = post.post_likes.find(l => l.user_id === user.id)
+                await db.remove('post_likes', like.id)
             } else {
-                localDb.insert('post_likes', { post_id: post.id, user_id: user.id })
+                await db.insert('post_likes', { post_id: post.id, user_id: user.id })
             }
-            loadPosts()
+            await loadPosts()
         } catch (err) { toast.error(err.message) }
     }
 
-    function addComment(postId) {
+    async function addComment(postId) {
         const text = commentText[postId]
         if (!text?.trim()) return
         try {
-            localDb.insert('post_comments', {
-                post_id: postId, user_id: user.id, student_id: profile.student_id, comment: text.trim(),
+            await db.insert('post_comments', {
+                post_id: postId, user_id: user.id, student_id: profile?.student_id, comment: text.trim(),
             })
             setCommentText(prev => ({ ...prev, [postId]: '' }))
-            loadPosts()
+            await loadPosts()
         } catch (err) { toast.error(err.message) }
     }
 

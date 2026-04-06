@@ -106,7 +106,7 @@ export function calculateCO2(entry) {
 
     return {
         totalCO2: Math.max(0, parseFloat(totalCO2.toFixed(2))),
-        totalPoints,
+        totalPoints: 0,
         breakdown,
     }
 }

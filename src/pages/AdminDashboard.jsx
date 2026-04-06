@@ -2,12 +2,13 @@ import { useState, useEffect } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useAuth } from '../contexts/AuthContext'
 import { useToast } from '../components/Toast'
-import { localDb } from '../lib/localDb'
+import { db } from '../lib/db'
 import {
     Shield, CheckCircle, XCircle, Trash2, Eye, Users, Activity,
-    MessageSquare, Image, Clock, LogOut, Loader2,
-    Award, BarChart3, Leaf
+    MessageSquare, Image, Clock, LogOut, Loader2, Plus, Calendar, MapPin,
+    Award, BarChart3, Leaf, QrCode, AlertTriangle
 } from 'lucide-react'
+import Modal from '../components/Modal'
 
 const card = {
     background: 'rgba(255,255,255,0.75)', backdropFilter: 'blur(12px)',
@@ -36,39 +37,60 @@ export default function AdminDashboard() {
     const [stats, setStats] = useState({})
     const [recentActivity, setRecentActivity] = useState([])
 
+    // Eco Drives state
+    const [adminDrives, setAdminDrives] = useState([])
+    const [showAddDriveModal, setShowAddDriveModal] = useState(false)
+    const [driveActionLoading, setDriveActionLoading] = useState(null)
+    const [newDrive, setNewDrive] = useState({
+        title: '',
+        description: '',
+        type: 'Plantation',
+        date: new Date().toISOString().split('T')[0],
+        points: 50,
+        location: '',
+        code: ''
+    })
+
+    // Waste Reports state
+    const [allReports, setAllReports] = useState([])
+    const [reportFilter, setReportFilter] = useState('pending')
+
     useEffect(() => {
         if (activeTab === 'proofs') loadProofs()
         else if (activeTab === 'feed') loadPosts()
         else if (activeTab === 'activity') loadActivity()
-    }, [activeTab, proofFilter])
+        else if (activeTab === 'drives') loadDrives()
+        else if (activeTab === 'reports') loadReports()
+    }, [activeTab, proofFilter, reportFilter])
 
     // ──── PROOFS ────
-    function loadProofs() {
+    async function loadProofs() {
         setLoading(true)
         try {
-            let data = localDb.getAll('challenge_completions')
+            let data = await db.getAll('challenge_completions')
             if (proofFilter !== 'all') data = data.filter(p => p.status === proofFilter)
             data = data.sort((a, b) => new Date(b.completed_at || b.created_at) - new Date(a.completed_at || a.created_at))
+            
             // Enrich with profiles and challenges
-            data = data.map(p => ({
+            const enriched = await Promise.all(data.map(async p => ({
                 ...p,
-                profiles: localDb.getById('profiles', p.user_id),
-                challenges: localDb.getById('challenges', p.challenge_id),
-            }))
-            setAllProofs(data)
+                profiles: await db.getById('profiles', p.user_id),
+                challenges: await db.getById('challenges', p.challenge_id),
+            })))
+            setAllProofs(enriched)
         } catch (err) { console.error(err) }
         finally { setLoading(false) }
     }
 
-    function handleProofAction(completion, action) {
+    async function handleProofAction(completion, action) {
         setActionLoading(completion.id)
         try {
-            localDb.update('challenge_completions', completion.id, { status: action })
+            await db.update('challenge_completions', completion.id, { status: action })
 
             if (action === 'approved' && completion.challenges?.points) {
-                const userProfile = localDb.getById('profiles', completion.user_id)
+                const userProfile = await db.getById('profiles', completion.user_id)
                 if (userProfile) {
-                    localDb.update('profiles', completion.user_id, {
+                    await db.update('profiles', completion.user_id, {
                         eco_points: (userProfile.eco_points || 0) + completion.challenges.points
                     })
                 }
@@ -81,31 +103,77 @@ export default function AdminDashboard() {
         finally { setActionLoading(null) }
     }
 
-    // ──── FEED ────
-    function loadPosts() {
+    // ──── REPORTS ────
+    async function loadReports() {
         setLoading(true)
         try {
-            let data = localDb.getAll('posts')
-                .sort((a, b) => new Date(b.created_at) - new Date(a.created_at))
-                .slice(0, 50)
-            data = data.map(p => ({
-                ...p,
-                profiles: localDb.getById('profiles', p.user_id),
-                post_likes: localDb.query('post_likes', l => l.post_id === p.id),
-                post_comments: localDb.query('post_comments', c => c.post_id === p.id),
-            }))
-            setPosts(data)
+            let data = await db.getAll('waste_reports')
+            if (reportFilter !== 'all') {
+                if (reportFilter === 'pending') data = data.filter(r => r.status === 'pending')
+                else if (reportFilter === 'resolved') data = data.filter(r => r.status === 'resolved')
+            }
+            data = data.sort((a, b) => new Date(b.created_at) - new Date(a.created_at))
+            const enriched = await Promise.all(data.map(async r => ({
+                ...r,
+                profiles: await db.getById('profiles', r.user_id)
+            })))
+            setAllReports(enriched)
         } catch (err) { console.error(err) }
         finally { setLoading(false) }
     }
 
-    function deletePost(post) {
+    async function handleReportAction(report, action) {
+        setActionLoading(report.id)
+        try {
+            await db.update('waste_reports', report.id, { status: action })
+
+            if (action === 'resolved') {
+                const userProfile = await db.getById('profiles', report.user_id)
+                if (userProfile) {
+                    // Award 20 points for report approval as per request
+                    await db.update('profiles', report.user_id, {
+                        eco_points: (userProfile.eco_points || 0) + 20
+                    })
+                    toast.success(`Resolved! +20 points awarded to ${report.profiles?.name}`)
+                }
+            } else {
+                toast.info(`Report marked as ${action}`)
+            }
+            setAllReports(prev => prev.filter(r => r.id !== report.id))
+        } catch (err) { toast.error(err.message) }
+        finally { setActionLoading(null) }
+    }
+
+    // ──── FEED ────
+    async function loadPosts() {
+        setLoading(true)
+        try {
+            let data = await db.getAll('posts')
+            const sorted = data.sort((a, b) => new Date(b.created_at) - new Date(a.created_at))
+                .slice(0, 50)
+            
+            const enriched = await Promise.all(sorted.map(async p => ({
+                ...p,
+                profiles: await db.getById('profiles', p.user_id),
+                post_likes: await db.query('post_likes', { post_id: p.id }),
+                post_comments: await db.query('post_comments', { post_id: p.id }),
+            })))
+            setPosts(enriched)
+        } catch (err) { console.error(err) }
+        finally { setLoading(false) }
+    }
+
+    async function deletePost(post) {
         if (!confirm(`Delete post by ${post.profiles?.name}?\n"${post.content?.slice(0, 80)}..."`)) return
         setDeletingPost(post.id)
         try {
-            localDb.removeWhere('post_likes', l => l.post_id === post.id)
-            localDb.removeWhere('post_comments', c => c.post_id === post.id)
-            localDb.remove('posts', post.id)
+            const postLikes = await db.query('post_likes', { post_id: post.id })
+            for (const like of postLikes) await db.remove('post_likes', like.id)
+            
+            const postComments = await db.query('post_comments', { post_id: post.id })
+            for (const comment of postComments) await db.remove('post_comments', comment.id)
+
+            await db.remove('posts', post.id)
             toast.success('Post deleted')
             setPosts(prev => prev.filter(p => p.id !== post.id))
         } catch (err) { toast.error(err.message) }
@@ -113,25 +181,93 @@ export default function AdminDashboard() {
     }
 
     // ──── ACTIVITY ────
-    function loadActivity() {
+    async function loadActivity() {
         setLoading(true)
         try {
-            const allUsers = localDb.getAll('profiles')
-                .sort((a, b) => (b.eco_points || 0) - (a.eco_points || 0))
-            const comps = localDb.getAll('challenge_completions')
+            const allUsers = await db.getAll('profiles')
+            const sortedUsers = allUsers.sort((a, b) => (b.eco_points || 0) - (a.eco_points || 0))
+            
+            const comps = await db.getAll('challenge_completions')
+            const enrichedComps = await Promise.all(comps
                 .sort((a, b) => new Date(b.completed_at || b.created_at) - new Date(a.completed_at || a.created_at))
                 .slice(0, 20)
-                .map(c => ({ ...c, profiles: localDb.getById('profiles', c.user_id) }))
-            setUsers(allUsers)
-            setRecentActivity(comps)
+                .map(async c => ({ 
+                    ...c, 
+                    profiles: await db.getById('profiles', c.user_id) 
+                }))
+            )
+            
+            setUsers(sortedUsers)
+            setRecentActivity(enrichedComps)
+            
+            const allPosts = await db.getAll('posts')
+            const allLogs = await db.getAll('co2_logs')
+            const allReportsData = await db.getAll('waste_reports')
+            
             setStats({
                 totalUsers: allUsers.length,
-                totalPosts: localDb.getAll('posts').length,
-                totalCO2Logs: localDb.getAll('co2_logs').length,
+                totalPosts: allPosts.length,
+                totalCO2Logs: allLogs.length,
+                totalReports: allReportsData.length,
                 totalPoints: allUsers.reduce((s, u) => s + (u.eco_points || 0), 0),
             })
         } catch (err) { console.error(err) }
         finally { setLoading(false) }
+    }
+
+    // ──── ECO DRIVES ────
+    async function loadDrives() {
+        setLoading(true)
+        try {
+            const data = await db.getAll('eco_drives')
+            const sorted = data.sort((a, b) => new Date(b.date) - new Date(a.date))
+            setAdminDrives(sorted)
+        } catch (err) { console.error(err) }
+        finally { setLoading(false) }
+    }
+
+    async function handleAddDrive(e) {
+        e.preventDefault()
+        if (!newDrive.title || !newDrive.code) {
+            toast.warning('Title and Code are required!')
+            return
+        }
+
+        setDriveActionLoading('adding')
+        try {
+            await db.insert('eco_drives', {
+                ...newDrive,
+                points: parseInt(newDrive.points),
+                status: 'active'
+            })
+            toast.success('Eco Drive posted successfully! 🌿')
+            setShowAddDriveModal(false)
+            setNewDrive({
+                title: '',
+                description: '',
+                type: 'Plantation',
+                date: new Date().toISOString().split('T')[0],
+                points: 50,
+                location: '',
+                code: ''
+            })
+            await loadDrives()
+        } catch (err) {
+            toast.error(err.message)
+        } finally {
+            setDriveActionLoading(null)
+        }
+    }
+
+    async function handleDeleteDrive(id) {
+        if (!window.confirm('Delete this drive? All participation records will be affected.')) return
+        setDriveActionLoading(id)
+        try {
+            await db.delete('eco_drives', id)
+            toast.success('Drive deleted')
+            setAdminDrives(prev => prev.filter(d => d.id !== id))
+        } catch (err) { toast.error(err.message) }
+        finally { setDriveActionLoading(null) }
     }
 
     function handleLogout() {
@@ -141,8 +277,10 @@ export default function AdminDashboard() {
 
     const TABS = [
         { key: 'proofs', icon: CheckCircle, label: 'Proof Approvals' },
+        { key: 'reports', icon: AlertTriangle, label: 'Waste Reports' },
         { key: 'feed', icon: MessageSquare, label: 'Feed Moderation' },
         { key: 'activity', icon: Activity, label: 'Activity Monitor' },
+        { key: 'drives', icon: QrCode, label: 'Eco Drives Codes' },
     ]
 
     return (
@@ -296,7 +434,102 @@ export default function AdminDashboard() {
                     </div>
                 )}
 
-                {/* ═══════ FEED TAB ═══════ */}
+                {/* ═══════ REPORTS TAB ═══════ */}
+                {activeTab === 'reports' && (
+                    <div>
+                        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '16px', flexWrap: 'wrap', gap: '12px' }}>
+                            <h2 style={{ fontSize: '22px', fontWeight: 700, fontFamily: 'Poppins, sans-serif', color: '#1b5e20' }}>Waste & Maintenance Reports</h2>
+                            <div style={{ display: 'flex', gap: '6px' }}>
+                                {['pending', 'resolved', 'all'].map(f => (
+                                    <button key={f} onClick={() => setReportFilter(f)} style={{
+                                        padding: '6px 14px', borderRadius: '8px', fontSize: '12px', fontWeight: 600,
+                                        textTransform: 'capitalize', border: 'none', cursor: 'pointer',
+                                        background: reportFilter === f ? '#4caf50' : 'rgba(255,255,255,0.7)',
+                                        color: reportFilter === f ? 'white' : '#6b7280'
+                                    }}>{f}</button>
+                                ))}
+                            </div>
+                        </div>
+
+                        {loading ? (
+                            <div style={{ textAlign: 'center', padding: '60px 0' }}>
+                                <Loader2 size={28} color="#4caf50" style={{ animation: 'spin 1s linear infinite', margin: '0 auto' }} />
+                            </div>
+                        ) : allReports.length > 0 ? (
+                            <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+                                {allReports.map(report => (
+                                    <div key={report.id} style={{
+                                        ...card, padding: '20px',
+                                        display: 'flex', gap: '16px', alignItems: 'flex-start',
+                                        flexWrap: 'wrap'
+                                    }}>
+                                        {report.photo_url ? (
+                                            <img src={report.photo_url} alt="Report" style={{
+                                                width: '120px', height: '120px', objectFit: 'cover',
+                                                borderRadius: '12px', border: '2px solid #e8f5e9', flexShrink: 0
+                                            }} />
+                                        ) : (
+                                            <div style={{
+                                                width: '120px', height: '120px', borderRadius: '12px',
+                                                background: '#e8f5e9', display: 'flex',
+                                                alignItems: 'center', justifyContent: 'center', flexShrink: 0
+                                            }}>
+                                                <Image size={24} color="#81c784" />
+                                            </div>
+                                        )}
+
+                                        <div style={{ flex: 1, minWidth: '200px' }}>
+                                            <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '6px' }}>
+                                                <h3 style={{ fontWeight: 600, fontSize: '15px', color: '#1f2937' }}>{report.type === 'waste' ? 'Waste Issue' : 'Maintenance / Other'}</h3>
+                                                <span style={{
+                                                    padding: '2px 8px', borderRadius: '6px', fontSize: '10px', fontWeight: 700, textTransform: 'uppercase',
+                                                    background: report.status === 'pending' ? '#fff3cd' : '#d4edda',
+                                                    color: report.status === 'pending' ? '#856404' : '#155724',
+                                                }}>{report.status}</span>
+                                            </div>
+                                            <p style={{ fontSize: '13px', color: '#6b7280', marginBottom: '4px' }}>
+                                                📍 <strong style={{ color: '#374151' }}>{report.location}</strong>
+                                            </p>
+                                            <p style={{ fontSize: '13px', color: '#374151', marginBottom: '8px' }}>{report.description || 'No description provided'}</p>
+                                            <div style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '12px', color: '#9ca3af' }}>
+                                                <Users size={12} /> {report.profiles?.name || 'Unknown User'}
+                                                <Clock size={12} /> {new Date(report.created_at).toLocaleString()}
+                                            </div>
+                                        </div>
+
+                                        {report.status === 'pending' && (
+                                            <div style={{ display: 'flex', gap: '8px', flexShrink: 0, alignSelf: 'center' }}>
+                                                <button onClick={() => handleReportAction(report, 'resolved')} disabled={actionLoading === report.id} style={{
+                                                    display: 'flex', alignItems: 'center', gap: '6px',
+                                                    padding: '10px 18px', borderRadius: '10px', fontSize: '13px', fontWeight: 600,
+                                                    border: 'none', cursor: 'pointer',
+                                                    background: 'linear-gradient(135deg, #10b981, #059669)',
+                                                    color: 'white', boxShadow: '0 4px 12px rgba(16,185,129,0.3)'
+                                                }}>
+                                                    {actionLoading === report.id ? <Loader2 size={14} style={{ animation: 'spin 1s linear infinite' }} /> : <CheckCircle size={14} />}
+                                                    Resolve (+20 pts)
+                                                </button>
+                                                <button onClick={() => handleReportAction(report, 'dismissed')} disabled={actionLoading === report.id} style={{
+                                                    display: 'flex', alignItems: 'center', gap: '6px',
+                                                    padding: '10px 18px', borderRadius: '10px', fontSize: '13px', fontWeight: 600,
+                                                    border: '1px solid rgba(156,163,175,0.2)', cursor: 'pointer',
+                                                    background: 'rgba(156,163,175,0.06)', color: '#6b7280'
+                                                }}>
+                                                    <XCircle size={14} /> Dismiss
+                                                </button>
+                                            </div>
+                                        )}
+                                    </div>
+                                ))}
+                            </div>
+                        ) : (
+                            <div style={{ ...card, padding: '60px', textAlign: 'center' }}>
+                                <AlertTriangle size={36} color="#81c784" style={{ margin: '0 auto 12px', opacity: 0.5 }} />
+                                <p style={{ color: '#9ca3af' }}>No {reportFilter} reports found</p>
+                            </div>
+                        )}
+                    </div>
+                )}
                 {activeTab === 'feed' && (
                     <div>
                         <h2 style={{ fontSize: '22px', fontWeight: 700, fontFamily: 'Poppins, sans-serif', color: '#1b5e20', marginBottom: '16px' }}>Feed Moderation</h2>
@@ -473,6 +706,64 @@ export default function AdminDashboard() {
                         )}
                     </div>
                 )}
+
+                {/* ═══════ DRIVES TAB ═══════ */}
+                {activeTab === 'drives' && (
+                    <div>
+                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px' }}>
+                            <h2 style={{ fontSize: '22px', fontWeight: 700, fontFamily: 'Poppins, sans-serif', color: '#1b5e20' }}>Campus Eco Drives</h2>
+                            <button 
+                                onClick={() => setShowAddDriveModal(true)}
+                                style={{ 
+                                    display: 'flex', alignItems: 'center', gap: '8px', 
+                                    padding: '10px 16px', borderRadius: '10px', background: '#4caf50', 
+                                    color: 'white', border: 'none', fontWeight: 600, cursor: 'pointer',
+                                    boxShadow: '0 4px 12px rgba(76,175,80,0.2)'
+                                }}
+                            >
+                                <Plus size={18} /> Post New Drive
+                            </button>
+                        </div>
+                        <p style={{ color: '#6b7280', marginBottom: '24px', fontSize: '14px' }}>Admins can post upcoming campus drives. Students will see these and join using the drive code or QR scanner.</p>
+
+                        {loading ? (
+                            <div style={{ textAlign: 'center', padding: '60px 0' }}>
+                                <Loader2 size={28} color="#4caf50" style={{ animation: 'spin 1s linear infinite', margin: '0 auto' }} />
+                            </div>
+                        ) : adminDrives.length > 0 ? (
+                            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(300px, 1fr))', gap: '16px' }}>
+                                {adminDrives.map(drive => (
+                                    <div key={drive.id} style={{ ...card, padding: '20px', position: 'relative', overflow: 'hidden' }}>
+                                        <div style={{ position: 'absolute', top: 0, right: 0, padding: '6px 12px', background: '#e8f5e9', color: '#2e7d32', fontSize: '11px', fontWeight: 700, borderBottomLeftRadius: '12px' }}>
+                                            {drive.points} PTS
+                                        </div>
+                                        <button 
+                                            onClick={() => handleDeleteDrive(drive.id)}
+                                            style={{ position: 'absolute', bottom: '12px', right: '12px', background: 'transparent', border: 'none', color: '#ef4444', cursor: 'pointer', padding: '4px' }}
+                                        >
+                                            {driveActionLoading === drive.id ? <Loader2 size={16} className="animate-spin" /> : <Trash2 size={16} />}
+                                        </button>
+                                        <h3 style={{ fontSize: '16px', fontWeight: 700, color: '#1f2937', marginBottom: '4px', paddingRight: '50px' }}>{drive.title}</h3>
+                                        <div style={{ display: 'flex', gap: '10px', fontSize: '12px', color: '#6b7280', marginBottom: '12px' }}>
+                                            <span style={{ display: 'flex', alignItems: 'center', gap: '4px' }}><Calendar size={13} /> {new Date(drive.date).toLocaleDateString()}</span>
+                                            <span style={{ display: 'flex', alignItems: 'center', gap: '4px' }}><MapPin size={13} /> {drive.location}</span>
+                                        </div>
+                                        
+                                        <div style={{ background: '#f9fafb', border: '1px dashed #d1d5db', borderRadius: '12px', padding: '12px', textAlign: 'center' }}>
+                                            <p style={{ fontSize: '10px', color: '#6b7280', textTransform: 'uppercase', letterSpacing: '0.5px', marginBottom: '2px' }}>Drive Code</p>
+                                            <p style={{ fontSize: '24px', fontFamily: 'monospace', fontWeight: 700, color: '#7c3aed', letterSpacing: '4px' }}>{drive.code || 'N/A'}</p>
+                                        </div>
+                                    </div>
+                                ))}
+                            </div>
+                        ) : (
+                            <div style={{ ...card, padding: '60px', textAlign: 'center' }}>
+                                <QrCode size={36} color="#81c784" style={{ margin: '0 auto 12px', opacity: 0.5 }} />
+                                <p style={{ color: '#9ca3af' }}>No drives found</p>
+                            </div>
+                        )}
+                    </div>
+                )}
             </div>
 
             <style>{`
@@ -481,6 +772,98 @@ export default function AdminDashboard() {
                     .admin-stats-grid { grid-template-columns: repeat(2, 1fr) !important; }
                     .admin-grid { grid-template-columns: 1fr !important; }
                 }
+            `}</style>
+            {/* Add Drive Modal */}
+            <Modal isOpen={showAddDriveModal} onClose={() => setShowAddDriveModal(false)} title="Post New Eco Drive" size="md">
+                <form onSubmit={handleAddDrive} style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                        <label style={{ fontSize: '13px', fontWeight: 600, color: '#374151' }}>Drive Title</label>
+                        <input 
+                            style={{ padding: '10px', borderRadius: '8px', border: '1px solid #e5e7eb', outline: 'none' }}
+                            placeholder="e.g. Campus Green-up 2024"
+                            value={newDrive.title}
+                            onChange={e => setNewDrive({...newDrive, title: e.target.value})}
+                        />
+                    </div>
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                        <label style={{ fontSize: '13px', fontWeight: 600, color: '#374151' }}>Description</label>
+                        <textarea 
+                            style={{ padding: '10px', borderRadius: '8px', border: '1px solid #e5e7eb', outline: 'none', height: '80px', resize: 'none' }}
+                            placeholder="Briefly describe the drive goal..."
+                            value={newDrive.description}
+                            onChange={e => setNewDrive({...newDrive, description: e.target.value})}
+                        />
+                    </div>
+                    <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px' }}>
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                            <label style={{ fontSize: '13px', fontWeight: 600, color: '#374151' }}>Type</label>
+                            <select 
+                                style={{ padding: '10px', borderRadius: '8px', border: '1px solid #e5e7eb', outline: 'none' }}
+                                value={newDrive.type}
+                                onChange={e => setNewDrive({...newDrive, type: e.target.value})}
+                            >
+                                <option>Plantation</option>
+                                <option>Cleanup</option>
+                                <option>Awareness</option>
+                                <option>Recycling Drive</option>
+                            </select>
+                        </div>
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                            <label style={{ fontSize: '13px', fontWeight: 600, color: '#374151' }}>Points</label>
+                            <input 
+                                type="number"
+                                style={{ padding: '10px', borderRadius: '8px', border: '1px solid #e5e7eb', outline: 'none' }}
+                                value={newDrive.points}
+                                onChange={e => setNewDrive({...newDrive, points: e.target.value})}
+                            />
+                        </div>
+                    </div>
+                    <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px' }}>
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                            <label style={{ fontSize: '13px', fontWeight: 600, color: '#374151' }}>Date</label>
+                            <input 
+                                type="date"
+                                style={{ padding: '10px', borderRadius: '8px', border: '1px solid #e5e7eb', outline: 'none' }}
+                                value={newDrive.date}
+                                onChange={e => setNewDrive({...newDrive, date: e.target.value})}
+                            />
+                        </div>
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                            <label style={{ fontSize: '13px', fontWeight: 600, color: '#374151' }}>Location</label>
+                            <input 
+                                style={{ padding: '10px', borderRadius: '8px', border: '1px solid #e5e7eb', outline: 'none' }}
+                                placeholder="e.g. Block A Grounds"
+                                value={newDrive.location}
+                                onChange={e => setNewDrive({...newDrive, location: e.target.value})}
+                            />
+                        </div>
+                    </div>
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                        <label style={{ fontSize: '13px', fontWeight: 600, color: '#374151' }}>Drive Code (Required for students)</label>
+                        <input 
+                            style={{ padding: '12px', borderRadius: '8px', border: '2px solid #7c3aed', outline: 'none', fontFamily: 'monospace', fontWeight: 700, textAlign: 'center', letterSpacing: '2px' }}
+                            placeholder="CAMPUS24"
+                            value={newDrive.code}
+                            onChange={e => setNewDrive({...newDrive, code: e.target.value.toUpperCase()})}
+                        />
+                    </div>
+                    <button 
+                        type="submit"
+                        disabled={driveActionLoading === 'adding'}
+                        style={{ 
+                            marginTop: '10px', padding: '14px', borderRadius: '12px', border: 'none', 
+                            background: '#1b5e20', color: 'white', fontWeight: 700, cursor: 'pointer',
+                            display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '8px'
+                        }}
+                    >
+                        {driveActionLoading === 'adding' ? <Loader2 size={18} className="animate-spin" /> : <><Plus size={18} /> Post Drive</>}
+                    </button>
+                </form>
+            </Modal>
+
+            <style>{`
+                .animate-spin { animation: spin 1s linear infinite; }
+                @keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
             `}</style>
         </div>
     )
